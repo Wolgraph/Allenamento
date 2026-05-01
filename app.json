@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "MyGymBuddy",
+    "slug": "mygymtracker",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0F172A"
+    },
+    "android": {
+      "package": "com.mygymtracker",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0F172A"
+      },
+      "permissions": [
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "SCHEDULE_EXACT_ALARM"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            { "scheme": "content", "mimeType": "application/x-workout" },
+            { "scheme": "file",    "mimeType": "application/x-workout" },
+            { "scheme": "content", "mimeType": "application/octet-stream", "pathPattern": ".*\\.workout" },
+            { "scheme": "file",    "mimeType": "application/octet-stream", "pathPattern": ".*\\.workout" }
+          ],
+          "category": ["DEFAULT", "BROWSABLE"]
+        }
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#3B82F6",
+          "sounds": [],
+          "enableBackgroundRemoteNotifications": false
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "cafb5d8f-cebd-4050-99fd-53d35be57e98"
+      }
+    }
+  }
+}

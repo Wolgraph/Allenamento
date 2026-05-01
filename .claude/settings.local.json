@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(CI=true npx create-expo-app@latest . --template blank-typescript)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(npm --version)",
+      "Bash(git --version)",
+      "Bash(npx expo *)",
+      "Bash(eas --version)",
+      "WebFetch(domain:wger.de)",
+      "Bash(cat babel.config.js)",
+      "Bash(cat babel.config.ts)",
+      "Bash(cat .babelrc)"
+    ]
+  }
+}
