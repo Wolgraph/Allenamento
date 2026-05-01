@@ -234,10 +234,11 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     gap: 6,
     alignItems: 'flex-start',
+
   },
   chip: {
     paddingHorizontal: 16,
-    paddingVertical: 9,
+    height: 42,
     borderRadius: 20,
     backgroundColor: COLORS.surface,
     borderWidth: 1,

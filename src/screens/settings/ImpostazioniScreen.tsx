@@ -13,7 +13,9 @@ import {
   type TimerFeedback,
 } from '../../utils/settings';
 import { getArchivedPlans, reactivatePlan } from '../../database/planRepository';
-import { importPlanFromFile } from '../../utils/workoutFile';
+import { parseWorkoutFile } from '../../utils/workoutFile';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import type { TrainingPlan } from '../../types';
 
@@ -56,14 +58,18 @@ export default function ImpostazioniScreen() {
   const handleImport = async () => {
     setImporting(true);
     try {
-      const name = await importPlanFromFile();
-      if (name) {
-        Alert.alert(
-          'Piano importato',
-          `"${name}" è stato aggiunto ai tuoi piani attivi.`,
-          [{ text: 'OK', onPress: () => navigation.navigate('Piani') }]
-        );
-      }
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/x-workout', 'application/octet-stream', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+      const uri     = result.assets[0].uri;
+      const content = await FileSystem.readAsStringAsync(uri);
+      const workoutData = parseWorkoutFile(content);
+      navigation.navigate('Piani', {
+        screen: 'ImportScheda',
+        params: { workoutData },
+      });
     } catch (e) {
       Alert.alert('Errore import', String(e));
     } finally {

@@ -50,13 +50,13 @@ function importCard(planId: number, card: WorkoutFileCard): void {
 
   // 2. Crea i gruppi (key → DB id)
   const groupKeyToId = new Map<string, number>();
-  card.groups.forEach((g, idx) => {
+  (card.groups ?? []).forEach((g, idx) => {
     const grp = createGroup(newCard.id, g.type, g.rounds, g.rest_time, g.name, idx);
     groupKeyToId.set(g.key, grp.id);
   });
 
   // 3. Crea gli esercizi e le voci card_exercise
-  card.exercises.forEach((ex: WorkoutFileExercise) => {
+  (card.exercises ?? []).forEach((ex: WorkoutFileExercise) => {
     const found    = findExerciseByName(ex.name);
     const exercise = found ?? createExercise(ex.name);
     const ceId     = addExerciseToCard(
@@ -114,8 +114,8 @@ export default function ImportSchedaScreen() {
     }
   };
 
-  const totalExercises = plan.cards.reduce((sum, c) => sum + c.exercises.length, 0);
-  const totalGroups    = plan.cards.reduce((sum, c) => sum + c.groups.length, 0);
+  const totalExercises = plan.cards.reduce((sum, c) => sum + (c.exercises?.length ?? 0), 0);
+  const totalGroups    = plan.cards.reduce((sum, c) => sum + (c.groups?.length ?? 0), 0);
 
   return (
     <View style={styles.container}>
@@ -155,7 +155,7 @@ export default function ImportSchedaScreen() {
         <Text style={styles.sectionLabel}>Schede incluse</Text>
         <View style={styles.cardList}>
           {plan.cards.map((card, cardIdx) => {
-            const groupMeta = new Map(card.groups.map(g => [g.key, g]));
+            const groupMeta = new Map((card.groups ?? []).map(g => [g.key, g]));
 
             // Build display rows: standalone + group blocks
             type Row =
