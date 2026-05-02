@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useState } from 'react';
 import {
   View, Text, TouchableOpacity, Modal, TextInput,
   StyleSheet, ScrollView,
@@ -8,7 +8,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { FontAwesome5 } from '@expo/vector-icons';
 
 import { COLORS } from '../../theme/colors';
-import { getCard } from '../../database/cardRepository';
+import { getCard, deleteCard } from '../../database/cardRepository';
 import { getExercisesForCard, deleteExerciseFromCard } from '../../database/cardExerciseRepository';
 import {
   createGroup, updateGroup, dissolveGroup,
@@ -232,12 +232,35 @@ export default function DettaglioSchedaScreen() {
   // Group create/edit modal
   const [groupModal, setGroupModal] = useState<GroupModalState>(INITIAL_MODAL);
 
+  // TODO: [BACKEND] confirmDeleteCard → chiama deleteCard(schedaId) già importato
+  const [confirmDeleteCard, setConfirmDeleteCard] = useState(false);
+
   const load = useCallback(() => {
     setCard(getCard(schedaId));
     setItems(buildItems(getExercisesForCard(schedaId)));
   }, [schedaId]);
 
   useFocusEffect(load);
+
+  // Sostituisce l'header nativo con un back link "< <nome piano>" coerente con il hero.
+  // TODO: [BACKEND] plan.name va recuperato passando pianoId a getPlan() — oppure
+  //       aggiungendo il nome del piano ai params di navigazione in DettaglioPianoScreen.
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerTitle: '',
+      headerLeft: () => (
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => navigation.goBack()}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <FontAwesome5 name="chevron-left" size={13} color={COLORS.primary} solid />
+          {/* TODO: [BACKEND] sostituire "Piano" con il nome reale del piano — es. route.params.pianoName */}
+          <Text style={styles.backBtnText}>Piano</Text>
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation]);
 
   // ── Group modal handlers ────────────────────────────────────────────────────
 
@@ -514,7 +537,7 @@ export default function DettaglioSchedaScreen() {
   return (
     <View style={styles.container}>
       {card && (
-        <View style={styles.header}>
+        <View style={styles.hero}>
           <Text style={styles.cardName}>{card.name}</Text>
           {card.description ? (
             <Text style={styles.cardDesc}>{card.description}</Text>
@@ -525,17 +548,30 @@ export default function DettaglioSchedaScreen() {
               <Text style={styles.cardNotes}>{card.notes}</Text>
             </View>
           ) : null}
-          <View style={styles.headerActions}>
+          <View style={styles.heroActions}>
             <TouchableOpacity
               style={styles.editBtn}
               onPress={() => navigation.navigate('CreaScheda', { pianoId, schedaId })}
             >
-              <FontAwesome5 name="pen" size={11} color={COLORS.primary} solid />
+              <FontAwesome5 name="pen" size={11} color={COLORS.textSub} solid />
               <Text style={styles.editBtnText}>Modifica</Text>
+            </TouchableOpacity>
+            {/* TODO: [BACKEND] onPress → setConfirmDeleteCard(true); la conferma chiama deleteCard(schedaId) */}
+            <TouchableOpacity
+              style={[styles.editBtn, styles.editBtnDanger]}
+              onPress={() => setConfirmDeleteCard(true)}
+            >
+              <FontAwesome5 name="trash" size={11} color={COLORS.danger} solid />
+              <Text style={[styles.editBtnText, { color: COLORS.danger }]}>Elimina</Text>
             </TouchableOpacity>
           </View>
         </View>
       )}
+      <View style={styles.sectionSep} />
+      <View style={styles.sectionRow}>
+        <Text style={styles.sectionLabel}>Esercizi</Text>
+        <Text style={styles.sectionCount}>{items.length}</Text>
+      </View>
 
       <ScrollView
         contentContainerStyle={items.length === 0 ? styles.emptyContainer : styles.listContent}
@@ -696,6 +732,23 @@ export default function DettaglioSchedaScreen() {
         onConfirm={() => handleDissolveGroup(confirmGroup!)}
       />
 
+      {/* Conferma elimina scheda */}
+      {/* TODO: [BACKEND] onConfirm → deleteCard(schedaId) poi navigation.goBack() */}
+      <ConfirmDialog
+        visible={confirmDeleteCard}
+        title="Elimina scheda"
+        message={`Eliminare "${card?.name}"? Verranno rimossi tutti gli esercizi associati.`}
+        icon="trash"
+        confirmLabel="Elimina"
+        destructive
+        onCancel={() => setConfirmDeleteCard(false)}
+        onConfirm={() => {
+          deleteCard(schedaId);
+          setConfirmDeleteCard(false);
+          navigation.goBack();
+        }}
+      />
+
       {/* Group create / edit modal */}
       <GroupModal
         state={groupModal}
@@ -712,19 +765,62 @@ export default function DettaglioSchedaScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
 
-  header: {
-    backgroundColor: COLORS.surface,
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+  backBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingLeft: 4,
   },
-  cardName: { color: COLORS.text, fontSize: 20, fontWeight: '700' },
+  backBtnText: {
+    color: COLORS.primary,
+    fontSize: 16,
+    fontWeight: '500',
+  },
+
+  hero: {
+    backgroundColor: COLORS.bg,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 16,
+  },
+  cardName: { color: COLORS.text, fontSize: 26, fontWeight: '700', letterSpacing: -0.3 },
   cardDesc: { color: COLORS.textSub, fontSize: 14, marginTop: 4, lineHeight: 20 },
   notesRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8 },
   cardNotes: { color: COLORS.textSub, fontSize: 13, fontStyle: 'italic', flex: 1 },
-  headerActions: { flexDirection: 'row', gap: 16, marginTop: 12 },
-  editBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  editBtnText: { color: COLORS.primary, fontSize: 14, fontWeight: '500' },
+  heroActions: { flexDirection: 'row', gap: 8, marginTop: 14 },
+  editBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: COLORS.surfaceAlt,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  editBtnText: { color: COLORS.textSub, fontSize: 13, fontWeight: '500' },
+  editBtnDanger: {
+    borderColor: COLORS.danger + '44',
+    backgroundColor: COLORS.danger + '10',
+  },
+  sectionSep: { height: 1, backgroundColor: COLORS.border },
+  sectionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 8,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  sectionCount: { fontSize: 12, color: COLORS.textMuted },
 
   listContent: { padding: 16, gap: 10 },
   emptyContainer: { flex: 1 },

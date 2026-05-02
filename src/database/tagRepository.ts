@@ -48,3 +48,16 @@ export function getAllExercisesWithTags(): ExerciseWithMeta[] {
   }
   return exercises;
 }
+
+export function setTagsForExercise(exerciseId: number, tagIds: number[]): void {
+  const db = getDB();
+  db.runSync('DELETE FROM exercise_tag_map WHERE exercise_id = ?', [exerciseId]);
+  for (const tagId of tagIds) {
+    try {
+      db.runSync(
+        'INSERT OR IGNORE INTO exercise_tag_map (exercise_id, tag_id) VALUES (?, ?)',
+        [exerciseId, tagId]
+      );
+    } catch (_) {}
+  }
+}

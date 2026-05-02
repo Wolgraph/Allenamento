@@ -32,6 +32,11 @@ export default function CreaSchedaScreen() {
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
 
   useEffect(() => {
+    if (!pianoId) {
+      Alert.alert('Errore', 'Nessun piano associato a questa scheda.');
+      navigation.goBack();
+      return;
+    }
     const allZone = getAllTags()
       .filter(t => t.type === 'zone')
       .sort((a, b) => ZONE_ORDER.indexOf(a.name) - ZONE_ORDER.indexOf(b.name));
@@ -47,7 +52,7 @@ export default function CreaSchedaScreen() {
       const existing = getTagsForCard(schedaId);
       setSelectedTagIds(existing.map(t => t.id));
     }
-  }, [schedaId]);
+  }, [pianoId, schedaId]);
 
   const toggleTag = (id: number) =>
     setSelectedTagIds(prev =>
@@ -59,6 +64,7 @@ export default function CreaSchedaScreen() {
       Alert.alert('Campo obbligatorio', 'Il nome della scheda è richiesto.');
       return;
     }
+    if (!pianoId) return;
     Keyboard.dismiss();
     try {
       if (schedaId) {
@@ -85,19 +91,18 @@ export default function CreaSchedaScreen() {
   };
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom + 16, 32) }]}
+        contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
-        scrollEnabled
       >
         <Text style={styles.label}>Nome scheda *</Text>
         <TextInput
           style={styles.input}
           value={name}
           onChangeText={setName}
-          placeholder="es. Giorno A – Push"
+          placeholder="es. Giorno A - Push"
           placeholderTextColor={COLORS.textMuted}
           maxLength={60}
           autoFocus
@@ -127,7 +132,6 @@ export default function CreaSchedaScreen() {
           maxLength={300}
         />
 
-        {/* Zone tag selector */}
         {zoneTags.length > 0 && (
           <>
             <View style={styles.tagLabelRow}>
@@ -160,20 +164,23 @@ export default function CreaSchedaScreen() {
             </View>
           </>
         )}
+      </ScrollView>
 
+      <View style={[styles.saveFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <TouchableOpacity style={styles.saveBtn} onPress={handleSave} activeOpacity={0.85}>
+          <FontAwesome5 name="check" size={15} color={COLORS.white} solid />
           <Text style={styles.saveBtnText}>
             {schedaId ? 'Salva modifiche' : 'Crea scheda'}
           </Text>
         </TouchableOpacity>
-      </ScrollView>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
-  content:   { padding: 20 },
+  content:   { padding: 20, paddingBottom: 16 },
 
   label: {
     color: COLORS.textSub,
@@ -192,35 +199,36 @@ const styles = StyleSheet.create({
   input: {
     backgroundColor: COLORS.surface,
     color: COLORS.text,
-    borderRadius: 10, borderWidth: 1, borderColor: COLORS.border,
+    borderRadius: 12, borderWidth: 1, borderColor: COLORS.border,
     paddingHorizontal: 14, paddingVertical: 12, fontSize: 16,
   },
   inputMultiline: { minHeight: 90, textAlignVertical: 'top' },
 
-  tagGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
+  tagGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   tagChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 14, paddingVertical: 8,
+    paddingHorizontal: 14, paddingVertical: 10,
     borderRadius: 20,
     backgroundColor: COLORS.surface,
     borderWidth: 1, borderColor: COLORS.border,
   },
-  tagChipActive: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
-  },
+  tagChipActive:     { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   tagChipText:       { color: COLORS.textSub, fontSize: 13, fontWeight: '500' },
   tagChipTextActive: { color: COLORS.white },
 
+  saveFooter: {
+    backgroundColor: COLORS.bg,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
   saveBtn: {
     backgroundColor: COLORS.primary,
-    borderRadius: 12, paddingVertical: 16,
-    alignItems: 'center', marginTop: 28,
+    borderRadius: 14, paddingVertical: 16,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8,
   },
   saveBtnText: { color: COLORS.white, fontSize: 16, fontWeight: '700' },
 });

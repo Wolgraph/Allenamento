@@ -2,26 +2,26 @@ import React, { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, Alert, Keyboard,
-  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp, CommonActions } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FontAwesome5 } from '@expo/vector-icons';
+
 import { COLORS } from '../../theme/colors';
 import { createPlan, updatePlan, getPlan } from '../../database/planRepository';
 import type { PianiStackParamList } from '../../navigation/types';
 
-type NavProp   = NativeStackNavigationProp<PianiStackParamList, 'CreaPiano'>;
+type NavProp    = NativeStackNavigationProp<PianiStackParamList, 'CreaPiano'>;
 type RouteProps = RouteProp<PianiStackParamList, 'CreaPiano'>;
 
 export default function CreaPianoScreen() {
   const navigation = useNavigation<NavProp>();
   const route      = useRoute<RouteProps>();
   const pianoId    = route.params?.pianoId;
+  const insets     = useSafeAreaInsets();
 
-  const insets = useSafeAreaInsets();
-  const [name, setName]               = useState('');
+  const [name,        setName]        = useState('');
   const [description, setDescription] = useState('');
 
   useEffect(() => {
@@ -62,13 +62,10 @@ export default function CreaPianoScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom + 16, 32) }]}
+        contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.label}>Nome piano *</Text>
@@ -93,60 +90,50 @@ export default function CreaPianoScreen() {
           numberOfLines={4}
           maxLength={300}
         />
+      </ScrollView>
 
+      <View style={[styles.saveFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <TouchableOpacity style={styles.saveBtn} onPress={handleSave} activeOpacity={0.85}>
+          <FontAwesome5 name="check" size={15} color={COLORS.white} solid />
           <Text style={styles.saveBtnText}>
             {pianoId ? 'Salva modifiche' : 'Crea piano'}
           </Text>
         </TouchableOpacity>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.bg,
-  },
-  content: {
-    padding: 20,
-    paddingBottom: 32,
-    gap: 6,
-  },
+  container: { flex: 1, backgroundColor: COLORS.bg },
+  content:   { padding: 20, paddingBottom: 16 },
+
   label: {
     color: COLORS.textSub,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-    marginTop: 12,
-    marginBottom: 4,
+    fontSize: 12, fontWeight: '700',
+    letterSpacing: 0.8, textTransform: 'uppercase',
+    marginTop: 16, marginBottom: 8,
   },
   input: {
     backgroundColor: COLORS.surface,
     color: COLORS.text,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
+    borderRadius: 12, borderWidth: 1, borderColor: COLORS.border,
+    paddingHorizontal: 14, paddingVertical: 12, fontSize: 16,
   },
-  inputMultiline: {
-    minHeight: 100,
-    textAlignVertical: 'top',
+  inputMultiline: { minHeight: 100, textAlignVertical: 'top' },
+
+  saveFooter: {
+    backgroundColor: COLORS.bg,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
   },
   saveBtn: {
     backgroundColor: COLORS.primary,
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginTop: 28,
+    borderRadius: 14, paddingVertical: 16,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8,
   },
-  saveBtnText: {
-    color: COLORS.white,
-    fontSize: 16,
-    fontWeight: '700',
-  },
+  saveBtnText: { color: COLORS.white, fontSize: 16, fontWeight: '700' },
 });

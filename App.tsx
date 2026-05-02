@@ -43,7 +43,13 @@ export default function App() {
   // Processa un URI di file .workout e naviga alla schermata di importazione
   const processWorkoutUrl = useCallback(async (url: string) => {
     try {
-      const content     = await FileSystem.readAsStringAsync(url);
+      let readUri = url;
+      if (url.startsWith('content://')) {
+        const dest = (FileSystem.cacheDirectory ?? '') + 'import_tmp.workout';
+        await FileSystem.copyAsync({ from: url, to: dest });
+        readUri = dest;
+      }
+      const content     = await FileSystem.readAsStringAsync(readUri);
       const workoutData = parseWorkoutFile(content);
       navigationRef.dispatch(
         CommonActions.navigate('Piani', {

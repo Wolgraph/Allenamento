@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FontAwesome5 } from '@expo/vector-icons';
 
 import { COLORS } from '../../theme/colors';
@@ -18,6 +19,7 @@ type NavProp = NativeStackNavigationProp<PianiStackParamList, 'PianiAttivi'>;
 
 export default function PianiAttiviScreen() {
   const navigation = useNavigation<NavProp>();
+  const insets = useSafeAreaInsets();
   const [plans, setPlans] = useState<TrainingPlan[]>([]);
 
   const [menuPlan,      setMenuPlan]      = useState<TrainingPlan | null>(null);
@@ -36,14 +38,7 @@ export default function PianiAttiviScreen() {
       <View style={styles.accentBar} />
       <View style={styles.cardContent}>
         <View style={styles.cardHeader}>
-          <View style={styles.cardTitleRow}>
-            <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>
-                {item.card_count ?? 0} {item.card_count === 1 ? 'scheda' : 'schede'}
-              </Text>
-            </View>
-          </View>
+          <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
           <TouchableOpacity
             style={styles.menuBtn}
             onPress={() => setMenuPlan(item)}
@@ -55,9 +50,18 @@ export default function PianiAttiviScreen() {
         {item.description ? (
           <Text style={styles.cardDesc} numberOfLines={2}>{item.description}</Text>
         ) : null}
+        <View style={styles.cardMeta}>
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>
+              {item.card_count ?? 0} {item.card_count === 1 ? 'scheda' : 'schede'}
+            </Text>
+          </View>
+        </View>
       </View>
     </TouchableOpacity>
   );
+
+  const hasPlans = plans.length > 0;
 
   return (
     <View style={styles.container}>
@@ -65,7 +69,19 @@ export default function PianiAttiviScreen() {
         data={plans}
         keyExtractor={(item) => String(item.id)}
         renderItem={renderItem}
-        contentContainerStyle={plans.length === 0 ? styles.emptyContainer : styles.listContent}
+        contentContainerStyle={[styles.listContent, !hasPlans && styles.listContentEmpty]}
+        ListFooterComponent={hasPlans ? (
+          <TouchableOpacity
+            style={styles.addRow}
+            onPress={() => navigation.navigate('CreaPiano', {})}
+            activeOpacity={0.7}
+          >
+            <View style={styles.addCircle}>
+              <FontAwesome5 name="plus" size={13} color={COLORS.primary} solid />
+            </View>
+            <Text style={styles.addRowText}>Nuovo piano</Text>
+          </TouchableOpacity>
+        ) : null}
         refreshControl={
           <RefreshControl refreshing={false} onRefresh={loadPlans} tintColor={COLORS.primary} />
         }
@@ -80,15 +96,19 @@ export default function PianiAttiviScreen() {
         }
       />
 
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => navigation.navigate('CreaPiano', {})}
-        activeOpacity={0.85}
-      >
-        <FontAwesome5 name="plus" size={20} color={COLORS.white} solid />
-      </TouchableOpacity>
+      {!hasPlans && (
+        <View style={[styles.saveFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+          <TouchableOpacity
+            style={styles.createFirstBtn}
+            onPress={() => navigation.navigate('CreaPiano', {})}
+            activeOpacity={0.85}
+          >
+            <FontAwesome5 name="plus" size={15} color={COLORS.white} solid />
+            <Text style={styles.createFirstBtnText}>Crea il tuo primo piano</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
-      {/* ⋮ menu */}
       <ActionSheet
         visible={!!menuPlan}
         title={menuPlan?.name}
@@ -115,7 +135,6 @@ export default function PianiAttiviScreen() {
         ]}
       />
 
-      {/* Conferma archivia */}
       <ConfirmDialog
         visible={!!confirmPlan}
         title="Archivia piano"
@@ -131,7 +150,6 @@ export default function PianiAttiviScreen() {
         }}
       />
 
-      {/* Conferma elimina */}
       <ConfirmDialog
         visible={!!confirmDelete}
         title="Elimina piano"
@@ -153,11 +171,11 @@ export default function PianiAttiviScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
   listContent: { padding: 16, gap: 12 },
-  emptyContainer: { flex: 1 },
+  listContentEmpty: { flex: 1 },
 
   card: {
     backgroundColor: COLORS.surface,
-    borderRadius: 14,
+    borderRadius: 16,
     overflow: 'hidden',
     elevation: 3,
     shadowColor: '#000',
@@ -174,46 +192,86 @@ const styles = StyleSheet.create({
   cardContent: {
     paddingLeft: 20,
     paddingRight: 14,
-    paddingVertical: 14,
+    paddingVertical: 18,
   },
   cardHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
-  },
-  cardTitleRow: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginRight: 8,
-    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
   },
   cardTitle: {
     color: COLORS.text,
-    fontSize: 17,
+    fontSize: 20,
     fontWeight: '700',
-    flexShrink: 1,
+    flex: 1,
+    marginRight: 8,
+  },
+  menuBtn: { padding: 4, marginTop: 2 },
+  cardDesc: {
+    color: COLORS.textSub,
+    fontSize: 14,
+    marginTop: 6,
+    lineHeight: 20,
+  },
+  cardMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
   },
   badge: {
-    backgroundColor: COLORS.primary + '33',
+    backgroundColor: COLORS.primary + '1A',
     borderWidth: 1,
-    borderColor: COLORS.primary,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    borderColor: COLORS.primary + '55',
+    paddingHorizontal: 9,
+    paddingVertical: 3,
     borderRadius: 20,
   },
   badgeText: {
     color: COLORS.primary,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
   },
-  menuBtn: { padding: 4 },
-  cardDesc: {
-    color: COLORS.textSub,
-    fontSize: 13,
-    marginTop: 6,
-    lineHeight: 18,
+
+  addRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 4,
   },
+  addCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: COLORS.primary + '66',
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addRowText: {
+    color: COLORS.primary,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+
+  saveFooter: {
+    backgroundColor: COLORS.bg,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  createFirstBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 14,
+    paddingVertical: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  createFirstBtnText: { color: COLORS.white, fontSize: 16, fontWeight: '700' },
 
   empty: {
     flex: 1,
@@ -234,22 +292,5 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: 'center',
     lineHeight: 22,
-  },
-
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 6,
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
   },
 });

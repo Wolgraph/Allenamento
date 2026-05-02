@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView,
   StyleSheet, Alert,
@@ -9,12 +9,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FontAwesome5 } from '@expo/vector-icons';
 
 import { COLORS } from '../../theme/colors';
-import { getActivePlans } from '../../database/planRepository';
+import { getActivePlans, createPlan } from '../../database/planRepository';
 import { createCard } from '../../database/cardRepository';
 import { addExerciseToCard } from '../../database/cardExerciseRepository';
 import { createGroup, setExerciseGroup } from '../../database/exerciseGroupRepository';
 import { findExerciseByName, createExercise } from '../../database/exerciseRepository';
-import type { TrainingPlan } from '../../types';
 import type { PianiStackParamList } from '../../navigation/types';
 import type { WorkoutFileCard, WorkoutFileExercise } from '../../utils/workoutFile';
 
@@ -44,18 +43,22 @@ function groupTypeColor(type: string): string {
   return type === 'superset' ? COLORS.accent : type === 'circuit' ? COLORS.primary : COLORS.success;
 }
 
+function resolveUniqueName(base: string, existing: Set<string>): string {
+  if (!existing.has(base)) return base;
+  let i = 2;
+  while (existing.has(`${base} (${i})`)) i++;
+  return `${base} (${i})`;
+}
+
 function importCard(planId: number, card: WorkoutFileCard): void {
-  // 1. Crea la scheda
   const newCard = createCard(planId, card.name, card.description, card.notes);
 
-  // 2. Crea i gruppi (key → DB id)
   const groupKeyToId = new Map<string, number>();
   (card.groups ?? []).forEach((g, idx) => {
     const grp = createGroup(newCard.id, g.type, g.rounds, g.rest_time, g.name, idx);
     groupKeyToId.set(g.key, grp.id);
   });
 
-  // 3. Crea gli esercizi e le voci card_exercise
   (card.exercises ?? []).forEach((ex: WorkoutFileExercise) => {
     const found    = findExerciseByName(ex.name);
     const exercise = found ?? createExercise(ex.name);
@@ -77,34 +80,28 @@ export default function ImportSchedaScreen() {
   const { plan } = workoutData;
   const insets = useSafeAreaInsets();
 
-  const [plans,          setPlans]          = useState<TrainingPlan[]>([]);
-  const [selectedPlanId, setSelectedPlanId] = useState<number | null>(null);
-  const [importing,      setImporting]      = useState(false);
+  const [importing, setImporting] = useState(false);
 
-  useEffect(() => {
-    const active = getActivePlans();
-    setPlans(active);
-    if (active.length === 1) setSelectedPlanId(active[0].id);
-  }, []);
+  const resolvedName = useMemo(() => {
+    const existing = new Set(getActivePlans().map(p => p.name));
+    return resolveUniqueName(plan.name, existing);
+  }, [plan.name]);
+
+  const nameChanged = resolvedName !== plan.name;
 
   const handleImport = () => {
-    if (!selectedPlanId) {
-      Alert.alert('Piano richiesto', 'Seleziona il piano in cui importare.');
-      return;
-    }
     setImporting(true);
     try {
-      // Importa tutte le schede del piano
+      const newPlan = createPlan(resolvedName, plan.description ?? null);
       for (const card of plan.cards) {
-        importCard(selectedPlanId, card);
+        importCard(newPlan.id, card);
       }
-      // Naviga al piano
       navigation.dispatch(
         CommonActions.reset({
           index: 1,
           routes: [
             { name: 'PianiAttivi' },
-            { name: 'DettaglioPiano', params: { pianoId: selectedPlanId } },
+            { name: 'DettaglioPiano', params: { pianoId: newPlan.id } },
           ],
         })
       );
@@ -128,7 +125,13 @@ export default function ImportSchedaScreen() {
             <FontAwesome5 name="clipboard-list" size={20} color={COLORS.primary} solid />
           </View>
           <View style={styles.planPreviewInfo}>
-            <Text style={styles.planPreviewName}>{plan.name}</Text>
+            <Text style={styles.planPreviewName}>{resolvedName}</Text>
+            {nameChanged && (
+              <View style={styles.renamedBadge}>
+                <FontAwesome5 name="info-circle" size={10} color={COLORS.accent} solid />
+                <Text style={styles.renamedText}>rinominato da "{plan.name}"</Text>
+              </View>
+            )}
             {plan.description ? (
               <Text style={styles.planPreviewDesc}>{plan.description}</Text>
             ) : null}
@@ -157,7 +160,6 @@ export default function ImportSchedaScreen() {
           {plan.cards.map((card, cardIdx) => {
             const groupMeta = new Map((card.groups ?? []).map(g => [g.key, g]));
 
-            // Build display rows: standalone + group blocks
             type Row =
               | { kind: 'standalone'; ex: WorkoutFileExercise }
               | { kind: 'group-header'; groupKey: string }
@@ -175,7 +177,6 @@ export default function ImportSchedaScreen() {
 
             return (
               <View key={cardIdx} style={styles.cardBlock}>
-                {/* Card header */}
                 <View style={styles.cardBlockHeader}>
                   <FontAwesome5 name="clipboard" size={12} color={COLORS.primary} solid />
                   <Text style={styles.cardBlockName}>{card.name}</Text>
@@ -187,7 +188,6 @@ export default function ImportSchedaScreen() {
                   <Text style={styles.cardBlockDesc}>{card.description}</Text>
                 ) : null}
 
-                {/* Exercise rows */}
                 {rows.map((row, rowIdx) => {
                   if (row.kind === 'group-header') {
                     const g = groupMeta.get(row.groupKey);
@@ -231,52 +231,16 @@ export default function ImportSchedaScreen() {
           })}
         </View>
 
-        {/* Selettore piano */}
-        <Text style={[styles.sectionLabel, { marginTop: 24 }]}>Importa nel piano</Text>
-        {plans.length === 0 ? (
-          <View style={styles.noPlans}>
-            <FontAwesome5 name="exclamation-triangle" size={20} color={COLORS.textMuted} solid />
-            <Text style={styles.noPlansText}>
-              Nessun piano attivo. Crea prima un piano dalla schermata principale.
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.planList}>
-            {plans.map(p => {
-              const active = selectedPlanId === p.id;
-              return (
-                <TouchableOpacity
-                  key={p.id}
-                  style={[styles.planRow, active && styles.planRowActive]}
-                  onPress={() => setSelectedPlanId(p.id)}
-                  activeOpacity={0.75}
-                >
-                  <View style={[styles.radio, active && styles.radioActive]}>
-                    {active && <View style={styles.radioDot} />}
-                  </View>
-                  <View style={styles.planInfo}>
-                    <Text style={[styles.planName, active && styles.planNameActive]}>{p.name}</Text>
-                    {p.description ? <Text style={styles.planDesc} numberOfLines={1}>{p.description}</Text> : null}
-                  </View>
-                  <Text style={styles.planCount}>{p.card_count ?? 0} schede</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        )}
-
         {/* Pulsante importa */}
         <TouchableOpacity
-          style={[styles.importBtn, (importing || !selectedPlanId) && styles.importBtnDisabled]}
+          style={[styles.importBtn, importing && styles.importBtnDisabled]}
           onPress={handleImport}
-          disabled={importing || !selectedPlanId}
+          disabled={importing}
           activeOpacity={0.85}
         >
           <FontAwesome5 name={importing ? 'hourglass-half' : 'download'} size={15} color={COLORS.white} solid />
           <Text style={styles.importBtnText}>
-            {importing
-              ? 'Importazione...'
-              : `Importa ${plan.cards.length} ${plan.cards.length === 1 ? 'scheda' : 'schede'}`}
+            {importing ? 'Importazione...' : `Importa piano`}
           </Text>
         </TouchableOpacity>
       </ScrollView>
@@ -308,7 +272,14 @@ const styles = StyleSheet.create({
   planPreviewInfo: { flex: 1, gap: 4 },
   planPreviewName: { color: COLORS.text, fontSize: 18, fontWeight: '700' },
   planPreviewDesc: { color: COLORS.textSub, fontSize: 13, lineHeight: 18 },
-  statsRow:        { flexDirection: 'row', gap: 8, marginTop: 4, flexWrap: 'wrap' },
+  renamedBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: COLORS.accent + '18',
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 8, alignSelf: 'flex-start',
+  },
+  renamedText: { color: COLORS.accent, fontSize: 11, fontWeight: '500' },
+  statsRow: { flexDirection: 'row', gap: 8, marginTop: 4, flexWrap: 'wrap' },
   statBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     backgroundColor: COLORS.surfaceAlt,
@@ -373,34 +344,6 @@ const styles = StyleSheet.create({
   exName:  { color: COLORS.text, fontSize: 13, fontWeight: '600', marginBottom: 3 },
   exTags:  { flexDirection: 'row', gap: 8 },
   exTag:   { color: COLORS.textMuted, fontSize: 11 },
-
-  planList: { gap: 8 },
-  planRow: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: COLORS.surface,
-    borderRadius: 12, padding: 14,
-    borderWidth: 1, borderColor: COLORS.border, gap: 12,
-  },
-  planRowActive:  { borderColor: COLORS.primary, backgroundColor: COLORS.primary + '0A' },
-  radio: {
-    width: 20, height: 20, borderRadius: 10,
-    borderWidth: 2, borderColor: COLORS.border,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  radioActive:   { borderColor: COLORS.primary },
-  radioDot:      { width: 10, height: 10, borderRadius: 5, backgroundColor: COLORS.primary },
-  planInfo:      { flex: 1 },
-  planName:      { color: COLORS.text, fontSize: 15, fontWeight: '600' },
-  planNameActive:{ color: COLORS.primary },
-  planDesc:      { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
-  planCount:     { color: COLORS.textMuted, fontSize: 12 },
-
-  noPlans: {
-    backgroundColor: COLORS.surface, borderRadius: 12, padding: 20,
-    alignItems: 'center', gap: 12,
-    borderWidth: 1, borderColor: COLORS.border,
-  },
-  noPlansText: { color: COLORS.textSub, fontSize: 14, textAlign: 'center', lineHeight: 20 },
 
   importBtn: {
     backgroundColor: COLORS.primary, borderRadius: 14, paddingVertical: 16,

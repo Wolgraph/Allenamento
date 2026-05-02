@@ -232,17 +232,20 @@ const styles = StyleSheet.create({
   chipRow: {
     paddingHorizontal: 12,
     paddingBottom: 10,
-    gap: 6,
-    alignItems: 'flex-start',
-
+    paddingTop: 6,
+    marginBottom: 20,
+    gap: 8,
+    alignItems: 'center',
+    minHeight: 54,
   },
   chip: {
-    paddingHorizontal: 16,
-    height: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    height: 34,
     borderRadius: 20,
     backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderWidth: 1, borderColor: COLORS.border,
   },
   chipZone: {
     borderColor: COLORS.primary + '55',
@@ -256,6 +259,7 @@ const styles = StyleSheet.create({
   chipDivider: {
     width: 1,
     height: 20,
+    alignSelf: 'center',
     backgroundColor: COLORS.border,
     marginHorizontal: 2,
   },

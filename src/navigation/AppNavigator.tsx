@@ -5,6 +5,7 @@ import { FontAwesome5 } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { COLORS } from '../theme/colors';
+import { promptUnsavedChanges, unregisterUnsavedChanges } from '../utils/unsavedChangesStore';
 import type { RootTabParamList, PianiStackParamList, WorkoutStackParamList } from './types';
 
 import PianiAttiviScreen      from '../screens/plans/PianiAttiviScreen';
@@ -82,6 +83,19 @@ export default function AppNavigator() {
             <FontAwesome5 name="clipboard-list" size={size - 2} color={color} solid />
           ),
         }}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            const proceeded = promptUnsavedChanges(() => {
+              unregisterUnsavedChanges();
+              navigation.navigate('Piani', { screen: 'PianiAttivi' });
+            });
+            if (proceeded) {
+              e.preventDefault();
+            } else {
+              navigation.navigate('Piani', { screen: 'PianiAttivi' });
+            }
+          },
+        })}
       />
       <Tab.Screen
         name="Allenamento"
@@ -91,6 +105,15 @@ export default function AppNavigator() {
             <FontAwesome5 name="dumbbell" size={size - 2} color={color} solid />
           ),
         }}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            const proceeded = promptUnsavedChanges(() => {
+              unregisterUnsavedChanges();
+              navigation.navigate('Allenamento');
+            });
+            if (proceeded) e.preventDefault();
+          },
+        })}
       />
       <Tab.Screen
         name="Catalogo"
@@ -105,6 +128,15 @@ export default function AppNavigator() {
           headerTintColor:  COLORS.text,
           headerTitleStyle: { fontWeight: '600' as const },
         }}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            const proceeded = promptUnsavedChanges(() => {
+              unregisterUnsavedChanges();
+              navigation.navigate('Catalogo');
+            });
+            if (proceeded) e.preventDefault();
+          },
+        })}
       />
       <Tab.Screen
         name="Storico"
@@ -114,6 +146,15 @@ export default function AppNavigator() {
             <FontAwesome5 name="chart-bar" size={size - 2} color={color} solid />
           ),
         }}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            const proceeded = promptUnsavedChanges(() => {
+              unregisterUnsavedChanges();
+              navigation.navigate('Storico');
+            });
+            if (proceeded) e.preventDefault();
+          },
+        })}
       />
       <Tab.Screen
         name="Impostazioni"
@@ -123,6 +164,15 @@ export default function AppNavigator() {
             <FontAwesome5 name="cog" size={size - 2} color={color} solid />
           ),
         }}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            const proceeded = promptUnsavedChanges(() => {
+              unregisterUnsavedChanges();
+              navigation.navigate('Impostazioni');
+            });
+            if (proceeded) e.preventDefault();
+          },
+        })}
       />
     </Tab.Navigator>
   );

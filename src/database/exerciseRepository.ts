@@ -24,6 +24,26 @@ export function createExercise(name: string): Exercise {
   return { id: result.lastInsertRowId, name: trimmed };
 }
 
+export function createExerciseWithMeta(
+  name: string,
+  defaultType: 'reps' | 'time' | 'bodyweight',
+  description: string | null,
+): Exercise {
+  const db = getDB();
+  const trimmed = name.trim();
+  const cols: string[] = ['name', 'default_type', 'lang'];
+  const vals: (string | number)[] = [trimmed, defaultType, 'it'];
+  if (description?.trim()) {
+    cols.push('description');
+    vals.push(description.trim());
+  }
+  const result = db.runSync(
+    `INSERT INTO exercises (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+    vals
+  );
+  return { id: result.lastInsertRowId, name: trimmed };
+}
+
 export function findExerciseByName(name: string): Exercise | null {
   return getDB().getFirstSync<Exercise>(
     'SELECT id, name FROM exercises WHERE LOWER(name) = LOWER(?)',

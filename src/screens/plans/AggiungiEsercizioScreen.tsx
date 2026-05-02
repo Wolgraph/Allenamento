@@ -10,8 +10,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FontAwesome5 } from '@expo/vector-icons';
 
 import { COLORS } from '../../theme/colors';
-import { createExercise, exerciseExists } from '../../database/exerciseRepository';
-import { getAllExercisesWithTags, getAllTags } from '../../database/tagRepository';
+import { createExercise, exerciseExists, createExerciseWithMeta } from '../../database/exerciseRepository';
+import { getAllExercisesWithTags, getAllTags, setTagsForExercise } from '../../database/tagRepository';
+import { registerUnsavedChanges, unregisterUnsavedChanges } from '../../utils/unsavedChangesStore';
 import { addExerciseToCard, updateExerciseInCard, getCardExercise } from '../../database/cardExerciseRepository';
 import type { ExerciseWithMeta, ExerciseTag } from '../../types';
 import type { PianiStackParamList } from '../../navigation/types';
@@ -107,6 +108,10 @@ export default function AggiungiEsercizioScreen() {
   const [modalMode,       setModalMode]       = useState<'search' | 'create'>('search');
   const [search,          setSearch]          = useState('');
   const [newExerciseName, setNewExerciseName] = useState('');
+  const [newExerciseType, setNewExerciseType] = useState<'reps' | 'time' | 'bodyweight'>('reps');
+  const [newExerciseDesc, setNewExerciseDesc] = useState('');
+  const [newExerciseTags, setNewExerciseTags] = useState<number[]>([]);
+  const [allTags,         setAllTags]         = useState<ExerciseTag[]>([]);
 
   // Modal state
   const [allExMeta,       setAllExMeta]       = useState<ExerciseWithMeta[]>([]);
@@ -130,10 +135,48 @@ export default function AggiungiEsercizioScreen() {
     }
   }, [cardExerciseId]);
 
+  const isSavingRef = useRef(false);
+
+  const showUnsavedAlert = useCallback((onProceed: () => void) => {
+    Alert.alert(
+      'Annullare inserimento?',
+      'Hai dati non salvati. Vuoi davvero uscire?',
+      [
+        { text: 'Continua a modificare', style: 'cancel' },
+        { text: 'Esci senza salvare', style: 'destructive', onPress: onProceed },
+      ]
+    );
+  }, []);
+
+  // Register in global store for tab-press interception
+  useEffect(() => {
+    if (selectedExercise) {
+      registerUnsavedChanges((onProceed) => showUnsavedAlert(onProceed));
+    } else {
+      unregisterUnsavedChanges();
+    }
+    return () => unregisterUnsavedChanges();
+  }, [selectedExercise, showUnsavedAlert]);
+
+  // Intercept hardware back button and header back chevron
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (!selectedExercise || isSavingRef.current) return;
+      e.preventDefault();
+      showUnsavedAlert(() => {
+        unregisterUnsavedChanges();
+        navigation.dispatch(e.data.action);
+      });
+    });
+    return unsubscribe;
+  }, [navigation, selectedExercise, showUnsavedAlert]);
+
   const openModal = useCallback(() => {
+    const allTagsLoaded = getAllTags();
+    setAllTags(allTagsLoaded);
     setAllExMeta(getAllExercisesWithTags());
     setZoneTags(
-      getAllTags()
+      allTagsLoaded
         .filter(t => t.type === 'zone')
         .sort((a, b) => ZONE_ORDER.indexOf(a.name) - ZONE_ORDER.indexOf(b.name))
     );
@@ -142,6 +185,10 @@ export default function AggiungiEsercizioScreen() {
     setModalMode('search');
     setPendingExercise(null);
     setExpandedId(null);
+    setNewExerciseName('');
+    setNewExerciseType('reps');
+    setNewExerciseDesc('');
+    setNewExerciseTags([]);
     setModalVisible(true);
   }, []);
 
@@ -186,7 +233,10 @@ export default function AggiungiEsercizioScreen() {
       Alert.alert('Esercizio esistente', `"${name}" è già presente nell'archivio.`);
       return;
     }
-    const newEx = createExercise(name);
+    const newEx = createExerciseWithMeta(name, newExerciseType, newExerciseDesc.trim() || null);
+    if (newExerciseTags.length > 0) {
+      setTagsForExercise(newEx.id, newExerciseTags);
+    }
     setSelectedExercise({ id: newEx.id, name: newEx.name });
     setPendingExercise(null);
     setModalVisible(false);
@@ -199,6 +249,8 @@ export default function AggiungiEsercizioScreen() {
     }
     Keyboard.dismiss();
     try {
+      isSavingRef.current = true;
+      unregisterUnsavedChanges();
       const dur = exerciseType === 'time' ? duration : null;
       if (cardExerciseId) {
         updateExerciseInCard(
@@ -277,10 +329,10 @@ export default function AggiungiEsercizioScreen() {
   };
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom + 16, 32) }]}
+        contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         scrollEnabled
       >
@@ -438,13 +490,17 @@ export default function AggiungiEsercizioScreen() {
           maxLength={200}
         />
 
+      </ScrollView>
+
+      {/* Sticky footer — save button */}
+      <View style={[styles.saveFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <TouchableOpacity style={styles.saveBtn} onPress={handleSave} activeOpacity={0.85}>
           <FontAwesome5 name="check" size={15} color={COLORS.white} solid />
           <Text style={styles.saveBtnText}>
             {cardExerciseId ? 'Salva modifiche' : 'Aggiungi esercizio'}
           </Text>
         </TouchableOpacity>
-      </ScrollView>
+      </View>
 
       {/* Modal selezione esercizio */}
       <Modal visible={modalVisible} animationType="slide" onRequestClose={closeModal}>
@@ -566,26 +622,122 @@ export default function AggiungiEsercizioScreen() {
               )}
             </>
           ) : (
-            <View style={[styles.createForm, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-              <Text style={styles.label}>Nome esercizio</Text>
-              <TextInput
-                style={styles.input}
-                value={newExerciseName}
-                onChangeText={setNewExerciseName}
-                placeholder="es. Panca Piana"
-                placeholderTextColor={COLORS.textMuted}
-                autoFocus
-                maxLength={80}
-              />
-              <TouchableOpacity style={styles.saveBtn} onPress={handleCreateExercise} activeOpacity={0.85}>
-                <FontAwesome5 name="check" size={15} color={COLORS.white} solid />
-                <Text style={styles.saveBtnText}>Crea e seleziona</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.backBtn} onPress={() => setModalMode('search')}>
-                <FontAwesome5 name="arrow-left" size={13} color={COLORS.textSub} solid />
-                <Text style={styles.backBtnText}>Torna alla ricerca</Text>
-              </TouchableOpacity>
-            </View>
+            <>
+              <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={[styles.createForm, { paddingBottom: 16 }]}
+                keyboardShouldPersistTaps="handled"
+              >
+                <Text style={styles.label}>Nome esercizio *</Text>
+                <TextInput
+                  style={styles.input}
+                  value={newExerciseName}
+                  onChangeText={setNewExerciseName}
+                  placeholder="es. Panca Piana"
+                  placeholderTextColor={COLORS.textMuted}
+                  autoFocus
+                  maxLength={80}
+                />
+
+                <Text style={styles.label}>Tipo</Text>
+                <View style={styles.typeGrid}>
+                  {([
+                    { key: 'reps',       icon: 'dumbbell',  label: 'Ripetizioni', color: COLORS.primary },
+                    { key: 'time',       icon: 'stopwatch', label: 'A tempo',     color: COLORS.accent  },
+                    { key: 'bodyweight', icon: 'running',   label: 'Corpo lib.',  color: COLORS.success },
+                  ] as const).map(({ key, icon, label, color }) => {
+                    const active = newExerciseType === key;
+                    return (
+                      <TouchableOpacity
+                        key={key}
+                        style={[styles.typeIconBtn, active && { backgroundColor: color + '22', borderColor: color }]}
+                        onPress={() => setNewExerciseType(key)}
+                        activeOpacity={0.75}
+                      >
+                        <View style={[styles.typeIconWrap, active && { backgroundColor: color + '33' }]}>
+                          <FontAwesome5 name={icon} size={20} color={active ? color : COLORS.textMuted} solid />
+                        </View>
+                        <Text style={[styles.typeIconLabel, active && { color }]}>{label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {allTags.filter(t => t.type === 'zone').length > 0 && (
+                  <>
+                    <Text style={styles.label}>Zona</Text>
+                    <View style={styles.tagWrap}>
+                      {allTags.filter(t => t.type === 'zone').sort((a, b) =>
+                        ZONE_ORDER.indexOf(a.name) - ZONE_ORDER.indexOf(b.name)
+                      ).map(tag => {
+                        const active = newExerciseTags.includes(tag.id);
+                        return (
+                          <TouchableOpacity
+                            key={tag.id}
+                            style={[styles.tagChip, active && styles.tagChipActive]}
+                            onPress={() => setNewExerciseTags(prev =>
+                              prev.includes(tag.id) ? prev.filter(x => x !== tag.id) : [...prev, tag.id]
+                            )}
+                            activeOpacity={0.75}
+                          >
+                            {active && <FontAwesome5 name="check" size={9} color={COLORS.white} solid style={{ marginRight: 4 }} />}
+                            <Text style={[styles.tagChipText, active && styles.tagChipTextActive]}>{tag.name}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </>
+                )}
+
+                {allTags.filter(t => t.type === 'muscle').length > 0 && (
+                  <>
+                    <Text style={styles.label}>Muscolo</Text>
+                    <View style={styles.tagWrap}>
+                      {allTags.filter(t => t.type === 'muscle').sort((a, b) => a.name.localeCompare(b.name)).map(tag => {
+                        const active = newExerciseTags.includes(tag.id);
+                        return (
+                          <TouchableOpacity
+                            key={tag.id}
+                            style={[styles.tagChip, active && styles.tagChipActive]}
+                            onPress={() => setNewExerciseTags(prev =>
+                              prev.includes(tag.id) ? prev.filter(x => x !== tag.id) : [...prev, tag.id]
+                            )}
+                            activeOpacity={0.75}
+                          >
+                            {active && <FontAwesome5 name="check" size={9} color={COLORS.white} solid style={{ marginRight: 4 }} />}
+                            <Text style={[styles.tagChipText, active && styles.tagChipTextActive]}>{tag.name}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </>
+                )}
+
+                <Text style={styles.label}>Descrizione (facoltativa)</Text>
+                <TextInput
+                  style={[styles.input, styles.inputMultiline]}
+                  value={newExerciseDesc}
+                  onChangeText={setNewExerciseDesc}
+                  placeholder="Come si esegue, note tecniche..."
+                  placeholderTextColor={COLORS.textMuted}
+                  multiline
+                  numberOfLines={3}
+                  maxLength={300}
+                />
+
+                <TouchableOpacity style={styles.backBtn} onPress={() => setModalMode('search')}>
+                  <FontAwesome5 name="arrow-left" size={13} color={COLORS.textSub} solid />
+                  <Text style={styles.backBtnText}>Torna alla ricerca</Text>
+                </TouchableOpacity>
+              </ScrollView>
+
+              <View style={[styles.saveFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+                <TouchableOpacity style={styles.saveBtn} onPress={handleCreateExercise} activeOpacity={0.85}>
+                  <FontAwesome5 name="check" size={15} color={COLORS.white} solid />
+                  <Text style={styles.saveBtnText}>Crea e seleziona</Text>
+                </TouchableOpacity>
+              </View>
+            </>
           )}
         </View>
       </Modal>
@@ -603,7 +755,7 @@ function EmptyExercises({ search }: { search: string }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
-  content:   { padding: 20 },
+  content:   { padding: 20, paddingBottom: 8 },
 
   label: {
     color: COLORS.textSub, fontSize: 12, fontWeight: '700',
@@ -671,7 +823,7 @@ const styles = StyleSheet.create({
   saveBtn: {
     backgroundColor: COLORS.primary, borderRadius: 14, paddingVertical: 16,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, marginTop: 28,
+    gap: 8,
   },
   saveBtnText: { color: COLORS.white, fontSize: 16, fontWeight: '700' },
 
@@ -697,14 +849,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 10,
     paddingTop: 6,
+    marginBottom: 20,
     gap: 8,
-    alignItems: 'flex-start',
+    alignItems: 'center',
+    minHeight: 54,
   },
   zoneChip: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
-    height: 42,
+    height: 34,
     borderRadius: 20,
     backgroundColor: COLORS.surface,
     borderWidth: 1, borderColor: COLORS.border,
@@ -724,7 +878,7 @@ const styles = StyleSheet.create({
 
   resultsBar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingBottom: 6,
+    paddingHorizontal: 16, paddingBottom: 6, marginTop: 6,
   },
   resultsCount: { color: COLORS.textMuted, fontSize: 12, fontWeight: '600' },
   pendingHint:  { color: COLORS.primary, fontSize: 12, fontWeight: '600', flex: 1, textAlign: 'right', marginLeft: 8 },
@@ -817,4 +971,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'center', gap: 8,
   },
   backBtnText: { color: COLORS.textSub, fontSize: 15 },
+
+  tagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  tagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  tagChipActive:     { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  tagChipText:       { color: COLORS.textSub, fontSize: 13, fontWeight: '500' },
+  tagChipTextActive: { color: COLORS.white },
+
+  saveFooter: {
+    backgroundColor: COLORS.bg,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
 });
