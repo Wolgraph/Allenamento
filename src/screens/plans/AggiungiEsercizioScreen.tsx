@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   StyleSheet, ScrollView, Modal, Alert, Keyboard,
-  SectionList,
+  SectionList, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -22,7 +22,7 @@ type RouteProps = RouteProp<PianiStackParamList, 'AggiungiEsercizio'>;
 
 const SETS_MIN  = 1;
 const SETS_MAX  = 10;
-const REST_MIN  = 30;
+const REST_MIN  = 0;
 const REST_MAX  = 300;
 const REST_STEP = 15;
 const DUR_MIN   = 10;
@@ -329,7 +329,10 @@ export default function AggiungiEsercizioScreen() {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: COLORS.bg }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScrollView
         style={styles.container}
         contentContainerStyle={styles.content}
@@ -504,7 +507,10 @@ export default function AggiungiEsercizioScreen() {
 
       {/* Modal selezione esercizio */}
       <Modal visible={modalVisible} animationType="slide" onRequestClose={closeModal}>
-        <View style={[styles.modal, { paddingTop: insets.top }]}>
+        <KeyboardAvoidingView
+          style={[styles.modal, { paddingTop: insets.top }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>
               {modalMode === 'search' ? 'Seleziona esercizio' : 'Nuovo esercizio'}
@@ -537,6 +543,7 @@ export default function AggiungiEsercizioScreen() {
               {/* Zone chips */}
               <ScrollView
                 horizontal
+                style={styles.filterScrollView}
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.zoneChipRow}
                 keyboardShouldPersistTaps="handled"
@@ -739,9 +746,9 @@ export default function AggiungiEsercizioScreen() {
               </View>
             </>
           )}
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -785,7 +792,20 @@ const styles = StyleSheet.create({
   },
   typeIconLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '600' },
 
-  chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+   filterScrollView: { 
+    minHeight: 54,
+    maxHeight:54,
+  },
+
+  chipsRow: {
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    paddingTop: 6,
+    marginBottom: 6,
+    gap: 8,
+    alignItems: 'center',
+    height:48,
+  },
   chip: {
     backgroundColor: COLORS.surface,
     borderRadius: 10, borderWidth: 1, borderColor: COLORS.border,

@@ -130,9 +130,6 @@ export default function SceltaSchedaScreen() {
                             </View>
                           )}
                         </View>
-                        {card.description ? (
-                          <Text style={styles.cardItemDesc} numberOfLines={1}>{card.description}</Text>
-                        ) : null}
                         <Text style={styles.cardItemMeta}>
                           <FontAwesome5 name="list-ul" size={10} color={COLORS.textMuted} solid />
                           {'  '}{card.exercise_count ?? 0} esercizi

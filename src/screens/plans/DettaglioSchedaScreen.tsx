@@ -1,6 +1,6 @@
-import React, { useCallback, useLayoutEffect, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, Modal, TextInput,
+  Alert, View, Text, TouchableOpacity, Modal, TextInput,
   StyleSheet, ScrollView,
 } from 'react-native';
 import { useFocusEffect, useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -8,16 +8,17 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { FontAwesome5 } from '@expo/vector-icons';
 
 import { COLORS } from '../../theme/colors';
-import { getCard, deleteCard } from '../../database/cardRepository';
+import { getCard, deleteCard, getTagsForCard } from '../../database/cardRepository';
 import { getExercisesForCard, deleteExerciseFromCard } from '../../database/cardExerciseRepository';
 import {
   createGroup, updateGroup, dissolveGroup,
-  setExerciseGroup, saveCardItemOrder, moveExerciseInGroup, renumberCardItems,
+  setExerciseGroup, moveExerciseInGroup, renumberCardItems,
 } from '../../database/exerciseGroupRepository';
 import ActionSheet from '../../components/ActionSheet';
 import ConfirmDialog from '../../components/ConfirmDialog';
-import type { CardExerciseWithName, WorkoutCard, CardItem } from '../../types';
+import type { CardExerciseWithName, ExerciseTag, WorkoutCard, CardItem } from '../../types';
 import type { PianiStackParamList } from '../../navigation/types';
+import { registerUnsavedChanges, unregisterUnsavedChanges } from '../../utils/unsavedChangesStore';
 
 type NavProp    = NativeStackNavigationProp<PianiStackParamList, 'DettaglioScheda'>;
 type RouteProps = RouteProp<PianiStackParamList, 'DettaglioScheda'>;
@@ -29,6 +30,22 @@ function formatRest(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function filterOutDeleted(built: CardItem[], pendingDelete: Set<number>): CardItem[] {
+  if (pendingDelete.size === 0) return built;
+  return built
+    .map(item => {
+      if (item.kind === 'group') {
+        return { ...item, exercises: item.exercises.filter(e => !pendingDelete.has(e.id)) };
+      }
+      return item;
+    })
+    .filter(item => {
+      if (item.kind === 'exercise') return !pendingDelete.has(item.data.id);
+      if (item.kind === 'group')    return item.exercises.length > 0;
+      return true;
+    });
 }
 
 function buildItems(exercises: CardExerciseWithName[]): CardItem[] {
@@ -218,8 +235,20 @@ export default function DettaglioSchedaScreen() {
   const route      = useRoute<RouteProps>();
   const { schedaId, pianoId } = route.params;
 
-  const [card,    setCard]    = useState<WorkoutCard | null>(null);
-  const [items,   setItems]   = useState<CardItem[]>([]);
+  const [card,     setCard]     = useState<WorkoutCard | null>(null);
+  const [items,    setItems]    = useState<CardItem[]>([]);
+  const [cardTags, setCardTags] = useState<ExerciseTag[]>([]);
+
+  // Edit mode state
+  const [editMode,     setEditMode]     = useState(false);
+  const [editItems,    setEditItems]    = useState<CardItem[]>([]);
+  const [expandedExId, setExpandedExId] = useState<number | null>(null);
+  const editModeRef      = useRef(false);
+  const editItemsRef     = useRef<CardItem[]>([]);
+  // Buffered add/remove tracking
+  const pendingDeleteRef  = useRef<Set<number>>(new Set()); // IDs to delete on Save
+  const addedInSessionRef = useRef<Set<number>>(new Set()); // IDs to delete on Discard
+  const originalIdsRef    = useRef<Set<number>>(new Set()); // snapshot on enterEditMode
 
   // Action sheet targets
   const [menuEx,    setMenuEx]    = useState<CardExerciseWithName | null>(null);
@@ -232,19 +261,94 @@ export default function DettaglioSchedaScreen() {
   // Group create/edit modal
   const [groupModal, setGroupModal] = useState<GroupModalState>(INITIAL_MODAL);
 
-  // TODO: [BACKEND] confirmDeleteCard → chiama deleteCard(schedaId) già importato
   const [confirmDeleteCard, setConfirmDeleteCard] = useState(false);
 
   const load = useCallback(() => {
     setCard(getCard(schedaId));
-    setItems(buildItems(getExercisesForCard(schedaId)));
+    setCardTags(getTagsForCard(schedaId));
+    const exs = getExercisesForCard(schedaId);
+    const built = buildItems(exs);
+    setItems(built);
+    if (editModeRef.current) {
+      // Detect exercises added since entering edit mode
+      built.forEach(item => {
+        const ids = item.kind === 'exercise'
+          ? [item.data.id]
+          : item.exercises.map(e => e.id);
+        ids.forEach(id => {
+          if (!originalIdsRef.current.has(id) && !addedInSessionRef.current.has(id)) {
+            addedInSessionRef.current = new Set([...addedInSessionRef.current, id]);
+          }
+        });
+      });
+      // Build editItems: DB state minus pending deletes
+      const filtered = filterOutDeleted(built, pendingDeleteRef.current);
+      setEditItems(filtered);
+      editItemsRef.current = filtered;
+    }
   }, [schedaId]);
 
   useFocusEffect(load);
 
+  // ── Edit mode helpers ────────────────────────────────────────────────────────
+
+  const resetEditRefs = () => {
+    editModeRef.current      = false;
+    editItemsRef.current     = [];
+    pendingDeleteRef.current  = new Set();
+    addedInSessionRef.current = new Set();
+    originalIdsRef.current    = new Set();
+  };
+
+  const saveEdit = useCallback(() => {
+    pendingDeleteRef.current.forEach(id => deleteExerciseFromCard(id));
+    renumberCardItems(editItemsRef.current);
+    resetEditRefs();
+    setEditMode(false);
+    setEditItems([]);
+    unregisterUnsavedChanges();
+    load();
+  }, [load]);
+
+  const discardEdit = useCallback(() => {
+    addedInSessionRef.current.forEach(id => deleteExerciseFromCard(id));
+    resetEditRefs();
+    setEditMode(false);
+    setEditItems([]);
+    unregisterUnsavedChanges();
+    load();
+  }, [load]);
+
+  const enterEditMode = useCallback(() => {
+    // Snapshot current exercise IDs
+    const snapshot = new Set<number>();
+    items.forEach(item => {
+      if (item.kind === 'exercise') snapshot.add(item.data.id);
+      else item.exercises.forEach(e => snapshot.add(e.id));
+    });
+    originalIdsRef.current    = snapshot;
+    pendingDeleteRef.current  = new Set();
+    addedInSessionRef.current = new Set();
+
+    editModeRef.current  = true;
+    editItemsRef.current = [...items];
+    setEditMode(true);
+    setEditItems([...items]);
+    setExpandedExId(null);
+    registerUnsavedChanges((onProceed) => {
+      Alert.alert(
+        'Modifiche in corso',
+        'Cosa vuoi fare prima di uscire?',
+        [
+          { text: 'Rimani', style: 'cancel' },
+          { text: 'Salva', onPress: () => { saveEdit(); onProceed(); } },
+          { text: 'Annulla modifiche', style: 'destructive', onPress: () => { discardEdit(); onProceed(); } },
+        ]
+      );
+    });
+  }, [items, saveEdit, discardEdit]);
+
   // Sostituisce l'header nativo con un back link "< <nome piano>" coerente con il hero.
-  // TODO: [BACKEND] plan.name va recuperato passando pianoId a getPlan() — oppure
-  //       aggiungendo il nome del piano ai params di navigazione in DettaglioPianoScreen.
   useLayoutEffect(() => {
     navigation.setOptions({
       headerTitle: '',
@@ -261,6 +365,24 @@ export default function DettaglioSchedaScreen() {
       ),
     });
   }, [navigation]);
+
+  // Intercept back navigation while in edit mode
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (!editModeRef.current) return;
+      e.preventDefault();
+      Alert.alert(
+        'Modifiche in corso',
+        'Cosa vuoi fare prima di uscire?',
+        [
+          { text: 'Rimani', style: 'cancel' },
+          { text: 'Salva', onPress: () => { saveEdit(); navigation.dispatch(e.data.action); } },
+          { text: 'Annulla modifiche', style: 'destructive', onPress: () => { discardEdit(); navigation.dispatch(e.data.action); } },
+        ]
+      );
+    });
+    return unsubscribe;
+  }, [navigation]); // saveEdit e discardEdit sono stabili (no dipendenze da state che cambiano)
 
   // ── Group modal handlers ────────────────────────────────────────────────────
 
@@ -324,9 +446,23 @@ export default function DettaglioSchedaScreen() {
 
   // ── Delete exercise ─────────────────────────────────────────────────────────
   const handleDeleteEx = (ex: CardExerciseWithName) => {
-    deleteExerciseFromCard(ex.id);
     setConfirmEx(null);
-    load();
+    if (editModeRef.current) {
+      if (addedInSessionRef.current.has(ex.id)) {
+        // Added during this session: delete from DB immediately (will be cleaned up anyway)
+        deleteExerciseFromCard(ex.id);
+        addedInSessionRef.current.delete(ex.id);
+      } else {
+        // Original exercise: mark pending-delete (don't touch DB)
+        pendingDeleteRef.current = new Set([...pendingDeleteRef.current, ex.id]);
+      }
+      const filtered = filterOutDeleted(editItemsRef.current, pendingDeleteRef.current);
+      setEditItems(filtered);
+      editItemsRef.current = filtered;
+    } else {
+      deleteExerciseFromCard(ex.id);
+      load();
+    }
   };
 
   // ── Dissolve group ──────────────────────────────────────────────────────────
@@ -404,20 +540,44 @@ export default function DettaglioSchedaScreen() {
 
   // ── Move exercise within its group ─────────────────────────────────────────
   const moveInGroup = (ex: CardExerciseWithName, direction: 'up' | 'down') => {
-    const groupItem = items.find(i => i.kind === 'group' && i.groupId === ex.group_id);
+    const source = editModeRef.current ? editItems : items;
+    const groupItem = source.find(i => i.kind === 'group' && i.groupId === ex.group_id);
     if (!groupItem || groupItem.kind !== 'group') return;
-    moveExerciseInGroup(ex.id, groupItem.exercises, direction);
-    load();
+    if (editModeRef.current) {
+      // In edit mode: update editItems optimistically, persist on save
+      const groupIdx = editItems.findIndex(i => i.kind === 'group' && i.groupId === ex.group_id);
+      if (groupIdx === -1) return;
+      const group = editItems[groupIdx] as CardItem & { kind: 'group' };
+      const exs = [...group.exercises];
+      const exIdx = exs.findIndex(e => e.id === ex.id);
+      const swapIdx = direction === 'up' ? exIdx - 1 : exIdx + 1;
+      if (swapIdx < 0 || swapIdx >= exs.length) return;
+      [exs[exIdx], exs[swapIdx]] = [exs[swapIdx], exs[exIdx]];
+      const updatedGroup = { ...group, exercises: exs };
+      const next = [...editItems];
+      next[groupIdx] = updatedGroup;
+      setEditItems(next);
+      editItemsRef.current = next;
+    } else {
+      moveExerciseInGroup(ex.id, groupItem.exercises, direction);
+      load();
+    }
   };
 
   // ── Move outer item (standalone exercise or group block) ───────────────────
   const moveOuterItem = (idx: number, direction: 'up' | 'down') => {
+    const source = editModeRef.current ? editItems : items;
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
-    if (swapIdx < 0 || swapIdx >= items.length) return;
-    const next = [...items];
+    if (swapIdx < 0 || swapIdx >= source.length) return;
+    const next = [...source];
     [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
-    setItems(next);
-    renumberCardItems(next);
+    if (editModeRef.current) {
+      setEditItems(next);
+      editItemsRef.current = next;
+    } else {
+      setItems(next);
+      renumberCardItems(next);
+    }
   };
 
   // ── Exercise card renderer (reusable for standalone + inside group) ─────────
@@ -430,118 +590,172 @@ export default function DettaglioSchedaScreen() {
     groupSize?: number,
     onMoveUp?: () => void,
     onMoveDown?: () => void,
-  ) => (
-    <TouchableOpacity
-      style={[
-        styles.card,
-        insideGroup && styles.cardInGroup,
-      ]}
-      onPress={() => navigation.navigate('AggiungiEsercizio', { schedaId, cardExerciseId: item.id })}
-      activeOpacity={0.75}
-    >
-      {!insideGroup && <View style={styles.accentBar} />}
-      <View style={[styles.cardContent, insideGroup && styles.cardContentInGroup]}>
-        <View style={styles.exerciseRow}>
-          <View style={styles.indexBadge}>
-            <Text style={styles.indexText}>{index + 1}</Text>
-          </View>
-          <View style={styles.exerciseInfo}>
-            <View style={styles.exerciseNameRow}>
-              <Text style={styles.exerciseName} numberOfLines={1}>{item.exercise_name}</Text>
-              <TouchableOpacity
-                style={styles.menuBtn}
-                onPress={() => setMenuEx(item)}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <FontAwesome5 name="ellipsis-v" size={14} color={COLORS.textMuted} solid />
-              </TouchableOpacity>
-              {insideGroup ? (
-                <View style={styles.groupReorderBtns}>
-                  <TouchableOpacity
-                    style={[styles.reorderBtn, index === 0 && styles.reorderBtnDisabled]}
-                    onPress={() => index > 0 && moveInGroup(item, 'up')}
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <FontAwesome5 name="chevron-up" size={11} color={index === 0 ? COLORS.border : COLORS.textMuted} solid />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.reorderBtn, groupSize !== undefined && index === groupSize - 1 && styles.reorderBtnDisabled]}
-                    onPress={() => groupSize !== undefined && index < groupSize - 1 && moveInGroup(item, 'down')}
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <FontAwesome5 name="chevron-down" size={11} color={groupSize !== undefined && index === groupSize - 1 ? COLORS.border : COLORS.textMuted} solid />
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <View style={styles.groupReorderBtns}>
-                  <TouchableOpacity
-                    style={[styles.reorderBtn, isFirst && styles.reorderBtnDisabled]}
-                    onPress={onMoveUp}
-                    disabled={isFirst}
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <FontAwesome5 name="chevron-up" size={11} color={isFirst ? COLORS.border : COLORS.textMuted} solid />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.reorderBtn, isLast && styles.reorderBtnDisabled]}
-                    onPress={onMoveDown}
-                    disabled={isLast}
-                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                  >
-                    <FontAwesome5 name="chevron-down" size={11} color={isLast ? COLORS.border : COLORS.textMuted} solid />
-                  </TouchableOpacity>
-                </View>
-              )}
+  ) => {
+    const isExpanded = !editMode && expandedExId === item.id;
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.card,
+          insideGroup && styles.cardInGroup,
+        ]}
+        onPress={() =>
+          editMode
+            ? navigation.navigate('AggiungiEsercizio', { schedaId, cardExerciseId: item.id })
+            : setExpandedExId(prev => prev === item.id ? null : item.id)
+        }
+        activeOpacity={0.75}
+      >
+        {!insideGroup && <View style={styles.accentBar} />}
+        <View style={[styles.cardContent, insideGroup && styles.cardContentInGroup]}>
+          <View style={styles.exerciseRow}>
+            <View style={styles.indexBadge}>
+              <Text style={styles.indexText}>{index + 1}</Text>
             </View>
-            <View style={styles.tagsRow}>
-              <View style={styles.tag}>
-                <FontAwesome5 name="layer-group" size={10} color={COLORS.textSub} solid />
-                <Text style={styles.tagText}>{item.sets} serie</Text>
+            <View style={styles.exerciseInfo}>
+              <View style={styles.exerciseNameRow}>
+                <Text style={styles.exerciseName} numberOfLines={1}>{item.exercise_name}</Text>
+                {editMode && (
+                  <TouchableOpacity
+                    style={styles.menuBtn}
+                    onPress={() => setMenuEx(item)}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <FontAwesome5 name="ellipsis-v" size={14} color={COLORS.textMuted} solid />
+                  </TouchableOpacity>
+                )}
+                {!editMode && (
+                  <FontAwesome5
+                    name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                    size={11}
+                    color={COLORS.textMuted}
+                    solid
+                    style={{ marginLeft: 8 }}
+                  />
+                )}
+                {editMode && (
+                  insideGroup ? (
+                    <View style={styles.groupReorderBtns}>
+                      <TouchableOpacity
+                        style={[styles.reorderBtn, index === 0 && styles.reorderBtnDisabled]}
+                        onPress={() => index > 0 && moveInGroup(item, 'up')}
+                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      >
+                        <FontAwesome5 name="chevron-up" size={11} color={index === 0 ? COLORS.border : COLORS.textMuted} solid />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.reorderBtn, groupSize !== undefined && index === groupSize - 1 && styles.reorderBtnDisabled]}
+                        onPress={() => groupSize !== undefined && index < groupSize - 1 && moveInGroup(item, 'down')}
+                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      >
+                        <FontAwesome5 name="chevron-down" size={11} color={groupSize !== undefined && index === groupSize - 1 ? COLORS.border : COLORS.textMuted} solid />
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={styles.groupReorderBtns}>
+                      <TouchableOpacity
+                        style={[styles.reorderBtn, isFirst && styles.reorderBtnDisabled]}
+                        onPress={onMoveUp}
+                        disabled={isFirst}
+                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      >
+                        <FontAwesome5 name="chevron-up" size={11} color={isFirst ? COLORS.border : COLORS.textMuted} solid />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.reorderBtn, isLast && styles.reorderBtnDisabled]}
+                        onPress={onMoveDown}
+                        disabled={isLast}
+                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      >
+                        <FontAwesome5 name="chevron-down" size={11} color={isLast ? COLORS.border : COLORS.textMuted} solid />
+                      </TouchableOpacity>
+                    </View>
+                  )
+                )}
               </View>
-              {item.exercise_type === 'time' ? (
-                <View style={[styles.tag, styles.tagTime]}>
-                  <FontAwesome5 name="stopwatch" size={10} color={COLORS.accent} solid />
-                  <Text style={[styles.tagText, { color: COLORS.accent }]}>{item.duration ?? '—'}s</Text>
-                </View>
-              ) : item.exercise_type === 'bodyweight' ? (
-                <View style={[styles.tag, styles.tagBodyweight]}>
-                  <FontAwesome5 name="running" size={10} color={COLORS.success} solid />
-                  <Text style={[styles.tagText, { color: COLORS.success }]}>{item.reps} reps</Text>
-                </View>
-              ) : (
+              <View style={styles.tagsRow}>
                 <View style={styles.tag}>
-                  <FontAwesome5 name="dumbbell" size={10} color={COLORS.textSub} solid />
-                  <Text style={styles.tagText}>{item.reps} reps</Text>
+                  <FontAwesome5 name="layer-group" size={10} color={COLORS.textSub} solid />
+                  <Text style={styles.tagText}>{item.sets} serie</Text>
                 </View>
+                {item.exercise_type === 'time' ? (
+                  <View style={[styles.tag, styles.tagTime]}>
+                    <FontAwesome5 name="stopwatch" size={10} color={COLORS.accent} solid />
+                    <Text style={[styles.tagText, { color: COLORS.accent }]}>{item.duration ?? '—'}s</Text>
+                  </View>
+                ) : item.exercise_type === 'bodyweight' ? (
+                  <View style={[styles.tag, styles.tagBodyweight]}>
+                    <FontAwesome5 name="running" size={10} color={COLORS.success} solid />
+                    <Text style={[styles.tagText, { color: COLORS.success }]}>{item.reps} reps</Text>
+                  </View>
+                ) : (
+                  <View style={styles.tag}>
+                    <FontAwesome5 name="dumbbell" size={10} color={COLORS.textSub} solid />
+                    <Text style={styles.tagText}>{item.reps} reps</Text>
+                  </View>
+                )}
+                {/* Show per-exercise rest for standalone, circuit, or simple group */}
+                {(!insideGroup || item.group_type === 'circuit' || item.group_type === 'simple') && (
+                  <View style={[styles.tag, styles.tagRest]}>
+                    <FontAwesome5 name="stopwatch" size={10} color={COLORS.primary} solid />
+                    <Text style={[styles.tagText, { color: COLORS.primary }]}>{formatRest(item.rest_time)}</Text>
+                  </View>
+                )}
+              </View>
+              {item.notes && !isExpanded ? (
+                <Text style={styles.exerciseNotes} numberOfLines={2}>{item.notes}</Text>
+              ) : null}
+            </View>
+          </View>
+
+          {/* Expanded detail — consultazione only */}
+          {isExpanded && (
+            <View style={styles.exerciseDetail}>
+              {item.exercise_description ? (
+                <Text style={styles.exerciseDetailDesc}>{item.exercise_description}</Text>
+              ) : item.notes ? null : (
+                <Text style={[styles.exerciseDetailDesc, { fontStyle: 'italic' }]}>Nessuna descrizione disponibile.</Text>
               )}
-              {/* Show per-exercise rest for standalone, circuit, or simple group */}
-              {(!insideGroup || item.group_type === 'circuit' || item.group_type === 'simple') && (
-                <View style={[styles.tag, styles.tagRest]}>
-                  <FontAwesome5 name="stopwatch" size={10} color={COLORS.primary} solid />
-                  <Text style={[styles.tagText, { color: COLORS.primary }]}>{formatRest(item.rest_time)}</Text>
-                </View>
+              {item.notes && (
+                <Text style={styles.exerciseDetailNotes}>{item.notes}</Text>
               )}
             </View>
-            {item.notes ? (
-              <Text style={styles.exerciseNotes} numberOfLines={2}>{item.notes}</Text>
-            ) : null}
-          </View>
+          )}
         </View>
-      </View>
-    </TouchableOpacity>
-  );
+      </TouchableOpacity>
+    );
+  };
 
   // Sequential display index for exercises (groups do not consume an index)
   let exCounter = 0;
+
+  const displayItems = editMode ? editItems : items;
 
   return (
     <View style={styles.container}>
       {card && (
         <View style={styles.hero}>
-          <Text style={styles.cardName}>{card.name}</Text>
-          {card.description ? (
-            <Text style={styles.cardDesc}>{card.description}</Text>
-          ) : null}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={[styles.cardName, { flex: 1 }]}>{card.name}</Text>
+            {editMode && (
+              <TouchableOpacity
+                style={styles.pencilBtn}
+                onPress={() => navigation.navigate('CreaScheda', { pianoId, schedaId })}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <FontAwesome5 name="pen" size={13} color={COLORS.primary} solid />
+              </TouchableOpacity>
+            )}
+          </View>
+          {cardTags.length > 0 && (
+            <View style={styles.heroTagsRow}>
+              {cardTags.map(t => (
+                <View key={t.id} style={styles.heroTagChip}>
+                  <Text style={styles.heroTagChipText}>{t.name}</Text>
+                </View>
+              ))}
+            </View>
+          )}
           {card.notes ? (
             <View style={styles.notesRow}>
               <FontAwesome5 name="thumbtack" size={11} color={COLORS.textMuted} solid />
@@ -549,34 +763,54 @@ export default function DettaglioSchedaScreen() {
             </View>
           ) : null}
           <View style={styles.heroActions}>
-            <TouchableOpacity
-              style={styles.editBtn}
-              onPress={() => navigation.navigate('CreaScheda', { pianoId, schedaId })}
-            >
-              <FontAwesome5 name="pen" size={11} color={COLORS.textSub} solid />
-              <Text style={styles.editBtnText}>Modifica</Text>
-            </TouchableOpacity>
-            {/* TODO: [BACKEND] onPress → setConfirmDeleteCard(true); la conferma chiama deleteCard(schedaId) */}
-            <TouchableOpacity
-              style={[styles.editBtn, styles.editBtnDanger]}
-              onPress={() => setConfirmDeleteCard(true)}
-            >
-              <FontAwesome5 name="trash" size={11} color={COLORS.danger} solid />
-              <Text style={[styles.editBtnText, { color: COLORS.danger }]}>Elimina</Text>
-            </TouchableOpacity>
+            {!editMode ? (
+              <>
+                <TouchableOpacity
+                  style={styles.editBtn}
+                  onPress={enterEditMode}
+                >
+                  <FontAwesome5 name="pen" size={11} color={COLORS.textSub} solid />
+                  <Text style={styles.editBtnText}>Modifica</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.editBtn, styles.editBtnDanger]}
+                  onPress={() => setConfirmDeleteCard(true)}
+                >
+                  <FontAwesome5 name="trash" size={11} color={COLORS.danger} solid />
+                  <Text style={[styles.editBtnText, { color: COLORS.danger }]}>Elimina</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={[styles.editBtn, styles.editBtnSave]}
+                  onPress={saveEdit}
+                >
+                  <FontAwesome5 name="check" size={11} color={COLORS.white} solid />
+                  <Text style={[styles.editBtnText, { color: COLORS.white }]}>Salva</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.editBtn}
+                  onPress={discardEdit}
+                >
+                  <FontAwesome5 name="times" size={11} color={COLORS.textSub} solid />
+                  <Text style={styles.editBtnText}>Annulla</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       )}
       <View style={styles.sectionSep} />
       <View style={styles.sectionRow}>
         <Text style={styles.sectionLabel}>Esercizi</Text>
-        <Text style={styles.sectionCount}>{items.length}</Text>
+        <Text style={styles.sectionCount}>{displayItems.length}</Text>
       </View>
 
       <ScrollView
-        contentContainerStyle={items.length === 0 ? styles.emptyContainer : styles.listContent}
+        contentContainerStyle={displayItems.length === 0 ? styles.emptyContainer : styles.listContent}
       >
-        {items.length === 0 ? (
+        {displayItems.length === 0 ? (
           <View style={styles.empty}>
             <FontAwesome5 name="running" size={44} color={COLORS.textMuted} solid />
             <Text style={styles.emptyTitle}>Nessun esercizio</Text>
@@ -585,9 +819,9 @@ export default function DettaglioSchedaScreen() {
             </Text>
           </View>
         ) : (
-          items.map((item, outerIdx) => {
+          displayItems.map((item, outerIdx) => {
             const isFirst = outerIdx === 0;
-            const isLast  = outerIdx === items.length - 1;
+            const isLast  = outerIdx === displayItems.length - 1;
 
             if (item.kind === 'exercise') {
               const displayIdx = exCounter++;
@@ -631,31 +865,35 @@ export default function DettaglioSchedaScreen() {
                       <Text style={styles.groupName} numberOfLines={1}>{item.type !== 'simple' ? ' · ' : ''}{item.name}</Text>
                     ) : null}
                   </View>
-                  <TouchableOpacity
-                    style={styles.menuBtn}
-                    onPress={() => setMenuGroup(item)}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  >
-                    <FontAwesome5 name="ellipsis-v" size={14} color={COLORS.textMuted} solid />
-                  </TouchableOpacity>
-                  <View style={styles.groupReorderBtns}>
+                  {editMode && (
                     <TouchableOpacity
-                      style={[styles.reorderBtn, isFirst && styles.reorderBtnDisabled]}
-                      onPress={() => moveOuterItem(outerIdx, 'up')}
-                      disabled={isFirst}
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      style={styles.menuBtn}
+                      onPress={() => setMenuGroup(item)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
-                      <FontAwesome5 name="chevron-up" size={11} color={isFirst ? COLORS.border : COLORS.textMuted} solid />
+                      <FontAwesome5 name="ellipsis-v" size={14} color={COLORS.textMuted} solid />
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.reorderBtn, isLast && styles.reorderBtnDisabled]}
-                      onPress={() => moveOuterItem(outerIdx, 'down')}
-                      disabled={isLast}
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                    >
-                      <FontAwesome5 name="chevron-down" size={11} color={isLast ? COLORS.border : COLORS.textMuted} solid />
-                    </TouchableOpacity>
-                  </View>
+                  )}
+                  {editMode && (
+                    <View style={styles.groupReorderBtns}>
+                      <TouchableOpacity
+                        style={[styles.reorderBtn, isFirst && styles.reorderBtnDisabled]}
+                        onPress={() => moveOuterItem(outerIdx, 'up')}
+                        disabled={isFirst}
+                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      >
+                        <FontAwesome5 name="chevron-up" size={11} color={isFirst ? COLORS.border : COLORS.textMuted} solid />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.reorderBtn, isLast && styles.reorderBtnDisabled]}
+                        onPress={() => moveOuterItem(outerIdx, 'down')}
+                        disabled={isLast}
+                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      >
+                        <FontAwesome5 name="chevron-down" size={11} color={isLast ? COLORS.border : COLORS.textMuted} solid />
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
                 <View style={styles.groupDivider} />
                 {item.exercises.map((ex, idx) => (
@@ -670,13 +908,15 @@ export default function DettaglioSchedaScreen() {
         )}
       </ScrollView>
 
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => navigation.navigate('AggiungiEsercizio', { schedaId })}
-        activeOpacity={0.85}
-      >
-        <FontAwesome5 name="plus" size={20} color={COLORS.white} solid />
-      </TouchableOpacity>
+      {editMode && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => navigation.navigate('AggiungiEsercizio', { schedaId })}
+          activeOpacity={0.85}
+        >
+          <FontAwesome5 name="plus" size={20} color={COLORS.white} solid />
+        </TouchableOpacity>
+      )}
 
       {/* ⋮ menu esercizio */}
       <ActionSheet
@@ -733,7 +973,6 @@ export default function DettaglioSchedaScreen() {
       />
 
       {/* Conferma elimina scheda */}
-      {/* TODO: [BACKEND] onConfirm → deleteCard(schedaId) poi navigation.goBack() */}
       <ConfirmDialog
         visible={confirmDeleteCard}
         title="Elimina scheda"
@@ -784,7 +1023,16 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
   },
   cardName: { color: COLORS.text, fontSize: 26, fontWeight: '700', letterSpacing: -0.3 },
-  cardDesc: { color: COLORS.textSub, fontSize: 14, marginTop: 4, lineHeight: 20 },
+  heroTagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  heroTagChip: {
+    backgroundColor: COLORS.primary + '18',
+    borderWidth: 1,
+    borderColor: COLORS.primary + '44',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+  },
+  heroTagChipText: { color: COLORS.primary, fontSize: 12, fontWeight: '600' },
   notesRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8 },
   cardNotes: { color: COLORS.textSub, fontSize: 13, fontStyle: 'italic', flex: 1 },
   heroActions: { flexDirection: 'row', gap: 8, marginTop: 14 },
@@ -804,6 +1052,16 @@ const styles = StyleSheet.create({
     borderColor: COLORS.danger + '44',
     backgroundColor: COLORS.danger + '10',
   },
+  editBtnSave: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  pencilBtn: {
+    width: 32, height: 32, borderRadius: 10,
+    backgroundColor: COLORS.primary + '18',
+    alignItems: 'center', justifyContent: 'center',
+  },
+
   sectionSep: { height: 1, backgroundColor: COLORS.border },
   sectionRow: {
     flexDirection: 'row',
@@ -904,6 +1162,17 @@ const styles = StyleSheet.create({
   },
   tagText: { color: COLORS.textSub, fontSize: 11, fontWeight: '500' },
   exerciseNotes: { color: COLORS.textMuted, fontSize: 12, marginTop: 8, fontStyle: 'italic' },
+
+  /* Expand detail — consultazione */
+  exerciseDetail: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    gap: 6,
+  },
+  exerciseDetailDesc: { color: COLORS.textSub, fontSize: 13, lineHeight: 19 },
+  exerciseDetailNotes: { color: COLORS.textMuted, fontSize: 12, fontStyle: 'italic' },
 
   /* Group block */
   groupBlock: {

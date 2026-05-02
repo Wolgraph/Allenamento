@@ -76,9 +76,6 @@ export default function DettaglioPianoScreen() {
           <View style={styles.cardRow}>
             <View style={styles.cardLeft}>
               <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
-              {item.description ? (
-                <Text style={styles.cardDesc} numberOfLines={1}>{item.description}</Text>
-              ) : null}
               {tags.length > 0 && (
                 <View style={styles.tagRow}>
                   {tags.map(t => (

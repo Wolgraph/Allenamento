@@ -87,12 +87,12 @@ export default function AppNavigator() {
           tabPress: (e) => {
             const proceeded = promptUnsavedChanges(() => {
               unregisterUnsavedChanges();
-              navigation.navigate('Piani', { screen: 'PianiAttivi' });
+              navigation.navigate('Piani');
             });
             if (proceeded) {
               e.preventDefault();
             } else {
-              navigation.navigate('Piani', { screen: 'PianiAttivi' });
+              navigation.navigate('Piani');
             }
           },
         })}

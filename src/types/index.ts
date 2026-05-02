@@ -51,6 +51,7 @@ export interface CardExercise {
 
 export interface CardExerciseWithName extends CardExercise {
   exercise_name: string;
+  exercise_description: string | null;
   // Joined from exercise_groups (null when not in a group)
   group_type: 'superset' | 'circuit' | 'simple' | null;
   group_rounds: number | null;

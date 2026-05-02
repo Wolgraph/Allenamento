@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, Alert, Keyboard,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp, CommonActions } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -25,9 +26,8 @@ export default function CreaSchedaScreen() {
   const { pianoId, schedaId } = route.params;
   const insets = useSafeAreaInsets();
 
-  const [name,           setName]           = useState('');
-  const [description,    setDescription]    = useState('');
-  const [notes,          setNotes]          = useState('');
+  const [name,  setName]  = useState('');
+  const [notes, setNotes] = useState('');
   const [zoneTags,       setZoneTags]       = useState<ExerciseTag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
 
@@ -46,7 +46,6 @@ export default function CreaSchedaScreen() {
       const card = getCard(schedaId);
       if (card) {
         setName(card.name);
-        setDescription(card.description ?? '');
         setNotes(card.notes ?? '');
       }
       const existing = getTagsForCard(schedaId);
@@ -68,11 +67,11 @@ export default function CreaSchedaScreen() {
     Keyboard.dismiss();
     try {
       if (schedaId) {
-        updateCard(schedaId, name, description || null, notes || null);
+        updateCard(schedaId, name, null, notes || null);
         setTagsForCard(schedaId, selectedTagIds);
         navigation.goBack();
       } else {
-        const card = createCard(pianoId, name, description || null, notes || null);
+        const card = createCard(pianoId, name, null, notes || null);
         setTagsForCard(card.id, selectedTagIds);
         navigation.dispatch(
           CommonActions.reset({
@@ -91,7 +90,10 @@ export default function CreaSchedaScreen() {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: COLORS.bg }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScrollView
         style={styles.container}
         contentContainerStyle={styles.content}
@@ -106,18 +108,6 @@ export default function CreaSchedaScreen() {
           placeholderTextColor={COLORS.textMuted}
           maxLength={60}
           autoFocus
-        />
-
-        <Text style={styles.label}>Descrizione</Text>
-        <TextInput
-          style={[styles.input, styles.inputMultiline]}
-          value={description}
-          onChangeText={setDescription}
-          placeholder="Gruppi muscolari, obiettivo..."
-          placeholderTextColor={COLORS.textMuted}
-          multiline
-          numberOfLines={3}
-          maxLength={200}
         />
 
         <Text style={styles.label}>Note</Text>
@@ -174,7 +164,7 @@ export default function CreaSchedaScreen() {
           </Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   SectionList, FlatList, StyleSheet, ScrollView,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { FontAwesome5 } from '@expo/vector-icons';
@@ -109,7 +110,10 @@ export default function CatalogoScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       {/* Search */}
       <View style={styles.searchWrap}>
         <FontAwesome5 name="search" size={13} color={COLORS.textMuted} solid style={styles.searchIcon} />
@@ -132,6 +136,7 @@ export default function CatalogoScreen() {
       {/* Tag chips */}
       <ScrollView
         horizontal
+        style={styles.filterScrollView}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.chipRow}
       >
@@ -198,7 +203,7 @@ export default function CatalogoScreen() {
           ListEmptyComponent={<EmptyState />}
         />
       )}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -229,14 +234,18 @@ const styles = StyleSheet.create({
   searchIcon:  { marginRight: 8 },
   searchInput: { flex: 1, color: COLORS.text, fontSize: 15 },
 
+  filterScrollView: { 
+    maxHeight:54,
+  },
+
   chipRow: {
     paddingHorizontal: 12,
     paddingBottom: 10,
     paddingTop: 6,
-    marginBottom: 20,
+    marginBottom: 6,
     gap: 8,
     alignItems: 'center',
-    minHeight: 54,
+    height:48,
   },
   chip: {
     flexDirection: 'row',
@@ -264,7 +273,11 @@ const styles = StyleSheet.create({
     marginHorizontal: 2,
   },
 
-  listContent: { paddingHorizontal: 12, paddingBottom: 32 },
+  listContent: { 
+    paddingHorizontal: 12,
+    paddingBottom: 32,
+    },
+  
   emptyFlex:   { flex: 1 },
 
   sectionHeader: {

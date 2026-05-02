@@ -54,7 +54,7 @@ async function scheduleRestNotification(seconds: number): Promise<string> {
 
 interface GroupInfo {
   groupId:      number;
-  type:         'superset' | 'circuit';
+  type:         'superset' | 'circuit' | 'simple';
   rounds:       number;
   restTime:     number;   // group rest (after round end)
   exRestTime:   number;   // per-exercise rest (used in circuit between exercises)
@@ -66,7 +66,6 @@ interface GroupInfo {
 function getGroupInfo(exercises: CardExerciseWithName[], idx: number): GroupInfo | null {
   const ex = exercises[idx];
   if (ex.group_id == null) return null;
-  if (ex.group_type === 'simple') return null; // treat simple groups as standalone
   const gid = ex.group_id;
   let firstIdx = idx;
   let lastIdx  = idx;
@@ -78,8 +77,8 @@ function getGroupInfo(exercises: CardExerciseWithName[], idx: number): GroupInfo
   }
   return {
     groupId:      gid,
-    type:         (ex.group_type ?? 'superset') as 'superset' | 'circuit',
-    rounds:       ex.group_rounds    ?? 3,
+    type:         (ex.group_type ?? 'superset') as 'superset' | 'circuit' | 'simple',
+    rounds:       ex.group_type === 'simple' ? 1 : (ex.group_rounds ?? 3),
     restTime:     ex.group_rest_time ?? 90,
     exRestTime:   ex.rest_time,
     firstIdx,
@@ -403,6 +402,30 @@ export default function AllenamentoAttivoScreen() {
     }
   };
 
+  // SIMPLE GROUP — 1 round, per-exercise rest between exercises, no rest after last
+  const handleSimple_continue = async (idx: number, gi: GroupInfo) => {
+    persistSet(idx, 1, progress[idx]?.weight ?? '');
+    timedPhaseRef.current = 'idle';
+    setTimedPhase('idle');
+    postRestIdxRef.current = idx + 1;
+    await startRest(gi.exRestTime);
+  };
+
+  const handleSimple_last = (idx: number, gi: GroupInfo) => {
+    persistSet(idx, 1, progress[idx]?.weight ?? '');
+    markGroupCompleted(gi.groupId);
+    timedPhaseRef.current = 'idle';
+    setTimedPhase('idle');
+    if (gi.lastIdx >= exercisesRef.current.length - 1) {
+      finishedRef.current = true;
+      const durationS = elapsed + 1;
+      if (sessionIdRef.current) finalizeSession(sessionIdRef.current, durationS);
+      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS });
+    } else {
+      setActiveIdx(gi.lastIdx + 1);
+    }
+  };
+
   const handleTimedAction = async () => {
     if (timedPhase === 'idle') {
       startTimedExercise();
@@ -427,12 +450,18 @@ export default function AllenamentoAttivoScreen() {
       } else {
         await handleSuperset_endRound(activeIdx, gi);
       }
-    } else {
-      // circuit
+    } else if (gi.type === 'circuit') {
       if (!gi.isLastInGroup) {
         await handleCircuit_restNext(activeIdx, gi);
       } else {
         await handleCircuit_endRound(activeIdx, gi);
+      }
+    } else {
+      // simple
+      if (!gi.isLastInGroup) {
+        await handleSimple_continue(activeIdx, gi);
+      } else {
+        handleSimple_last(activeIdx, gi);
       }
     }
   };
@@ -489,6 +518,10 @@ export default function AllenamentoAttivoScreen() {
       case 'done': {
         if (inGroup) {
           if (gi!.type === 'superset' && !gi!.isLastInGroup) return 'Prosegui →';
+          if (gi!.type === 'simple') {
+            if (!gi!.isLastInGroup) return `Recupero (${gi!.exRestTime}s)`;
+            return gi!.lastIdx >= exercises.length - 1 ? 'Fine allenamento' : 'Prossimo esercizio';
+          }
           if (isLastSet) return gi!.lastIdx >= exercises.length - 1 ? 'Fine allenamento' : 'Prossimo esercizio';
           return gi!.type === 'superset' ? `Recupero (${gi!.restTime}s)` : `Fine giro ${curRound}/${gi!.rounds}`;
         }
@@ -517,8 +550,7 @@ export default function AllenamentoAttivoScreen() {
         actionColor = COLORS.primary;
         actionIcon  = 'stopwatch';
       }
-    } else {
-      // circuit
+    } else if (gi!.type === 'circuit') {
       if (!gi!.isLastInGroup) {
         actionLabel = `Recupero (${formatTime(gi!.exRestTime)})`;
         actionColor = COLORS.primary;
@@ -531,6 +563,17 @@ export default function AllenamentoAttivoScreen() {
         actionLabel = `Fine giro ${curRound}/${gi!.rounds} · Recupero (${formatTime(gi!.restTime)})`;
         actionColor = COLORS.primary;
         actionIcon  = 'redo-alt';
+      }
+    } else {
+      // simple group
+      if (!gi!.isLastInGroup) {
+        actionLabel = `Recupero (${formatTime(gi!.exRestTime)})`;
+        actionColor = COLORS.success;
+        actionIcon  = 'stopwatch';
+      } else {
+        actionLabel = gi!.lastIdx >= exercises.length - 1 ? 'Fine allenamento' : 'Prossimo esercizio';
+        actionColor = COLORS.success;
+        actionIcon  = gi!.lastIdx >= exercises.length - 1 ? 'trophy' : 'arrow-right';
       }
     }
   } else {
@@ -623,8 +666,12 @@ export default function AllenamentoAttivoScreen() {
             if (exGi && !seenGroups.has(exGi.groupId)) {
               seenGroups.add(exGi.groupId);
               // Render group header
-              const typeLabel = exGi.type === 'superset' ? 'SUPERSERIE' : 'CIRCUITO';
-              const typeColor = exGi.type === 'superset' ? COLORS.accent : COLORS.primary;
+              const typeLabel = exGi.type === 'superset' ? 'SUPERSERIE'
+                : exGi.type === 'circuit' ? 'CIRCUITO'
+                : 'GRUPPO';
+              const typeColor = exGi.type === 'superset' ? COLORS.accent
+                : exGi.type === 'circuit' ? COLORS.primary
+                : COLORS.success;
               const curGrpRound = groupRound[exGi.groupId] ?? 1;
               // Group exercises
               const groupExs = exercises
@@ -648,8 +695,10 @@ export default function AllenamentoAttivoScreen() {
                     <Text style={[styles.groupBlockLabel, { color: typeColor }]}>{typeLabel}</Text>
                     <Text style={styles.groupBlockMeta}>
                       {groupDone
-                        ? `${exGi.rounds} giri completati`
-                        : `Giro ${curGrpRound} di ${exGi.rounds}  ·  Recupero ${formatTime(exGi.restTime)}`
+                        ? (exGi.type === 'simple' ? 'Completato' : `${exGi.rounds} giri completati`)
+                        : (exGi.type === 'simple'
+                            ? 'Esegui ogni esercizio in sequenza'
+                            : `Giro ${curGrpRound} di ${exGi.rounds}  ·  Recupero ${formatTime(exGi.restTime)}`)
                       }
                     </Text>
                     {groupDone && (
@@ -694,17 +743,20 @@ export default function AllenamentoAttivoScreen() {
                                 <Text style={styles.tagText}>{e.reps} reps</Text>
                               </View>
                             )}
-                            {exGi.type === 'circuit' && (
-                              <View style={styles.tag}>
-                                <FontAwesome5 name="stopwatch" size={9} color={COLORS.textMuted} solid />
-                                <Text style={styles.tagText}>{e.rest_time}s</Text>
-                              </View>
-                            )}
+                            {(() => {
+                              const isLastExerciseInGroup = e.id === exercises[exGi.lastIdx]?.id;
+                              return (exGi.type === 'circuit' || (exGi.type === 'simple' && !isLastExerciseInGroup)) && (
+                                <View style={styles.tag}>
+                                  <FontAwesome5 name="stopwatch" size={9} color={COLORS.textMuted} solid />
+                                  <Text style={styles.tagText}>{e.rest_time}s</Text>
+                                </View>
+                              );
+                            })()}
                           </View>
                           {gActive && !gDone && started && (
                             <View style={styles.activeDetails}>
                               <Text style={[styles.setLabel, { color: typeColor }]}>
-                                Giro {curGrpRound} di {exGi.rounds}
+                                {exGi.type === 'simple' ? 'Serie unica' : `Giro ${curGrpRound} di ${exGi.rounds}`}
                               </Text>
                               {gTimed ? (
                                 <View style={styles.timedBox}>

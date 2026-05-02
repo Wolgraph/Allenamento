@@ -47,9 +47,6 @@ export default function PianiAttiviScreen() {
             <FontAwesome5 name="ellipsis-v" size={16} color={COLORS.textMuted} solid />
           </TouchableOpacity>
         </View>
-        {item.description ? (
-          <Text style={styles.cardDesc} numberOfLines={2}>{item.description}</Text>
-        ) : null}
         <View style={styles.cardMeta}>
           <View style={styles.badge}>
             <Text style={styles.badgeText}>

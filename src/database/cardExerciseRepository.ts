@@ -4,7 +4,8 @@ import type { CardExerciseWithName } from '../types';
 export function getExercisesForCard(cardId: number): CardExerciseWithName[] {
   return getDB().getAllSync<CardExerciseWithName>(`
     SELECT ce.*,
-           e.name AS exercise_name,
+           e.name        AS exercise_name,
+           e.description AS exercise_description,
            eg.type       AS group_type,
            eg.rounds     AS group_rounds,
            eg.rest_time  AS group_rest_time,
@@ -21,7 +22,8 @@ export function getExercisesForCard(cardId: number): CardExerciseWithName[] {
 export function getCardExercise(id: number): CardExerciseWithName | null {
   return getDB().getFirstSync<CardExerciseWithName>(`
     SELECT ce.*,
-           e.name AS exercise_name,
+           e.name        AS exercise_name,
+           e.description AS exercise_description,
            eg.type       AS group_type,
            eg.rounds     AS group_rounds,
            eg.rest_time  AS group_rest_time,

@@ -13,7 +13,7 @@ import { getActivePlans, createPlan } from '../../database/planRepository';
 import { createCard } from '../../database/cardRepository';
 import { addExerciseToCard } from '../../database/cardExerciseRepository';
 import { createGroup, setExerciseGroup } from '../../database/exerciseGroupRepository';
-import { findExerciseByName, createExercise } from '../../database/exerciseRepository';
+import { findExerciseByName, createExerciseWithMeta } from '../../database/exerciseRepository';
 import type { PianiStackParamList } from '../../navigation/types';
 import type { WorkoutFileCard, WorkoutFileExercise } from '../../utils/workoutFile';
 
@@ -61,7 +61,7 @@ function importCard(planId: number, card: WorkoutFileCard): void {
 
   (card.exercises ?? []).forEach((ex: WorkoutFileExercise) => {
     const found    = findExerciseByName(ex.name);
-    const exercise = found ?? createExercise(ex.name);
+    const exercise = found ?? createExerciseWithMeta(ex.name, ex.exercise_type, null);
     const ceId     = addExerciseToCard(
       newCard.id, exercise.id, ex.sets, ex.reps, ex.rest_time,
       ex.notes, ex.exercise_type, ex.duration
@@ -184,9 +184,6 @@ export default function ImportSchedaScreen() {
                     <Text style={styles.cardBlockBadgeText}>{card.exercises.length} es.</Text>
                   </View>
                 </View>
-                {card.description ? (
-                  <Text style={styles.cardBlockDesc}>{card.description}</Text>
-                ) : null}
 
                 {rows.map((row, rowIdx) => {
                   if (row.kind === 'group-header') {
