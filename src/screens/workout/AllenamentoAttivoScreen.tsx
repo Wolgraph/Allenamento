@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
-  StyleSheet, ScrollView, BackHandler, Vibration,
+  StyleSheet, ScrollView, Alert, BackHandler, Vibration,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -9,7 +9,6 @@ import { FontAwesome5 } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 
 import { COLORS } from '../../theme/colors';
-import ConfirmDialog from '../../components/ConfirmDialog';
 import { getTimerFeedbackSync } from '../../utils/settings';
 import { getExercisesForCard, getLastWeightForExercise } from '../../database/cardExerciseRepository';
 import { getCard } from '../../database/cardRepository';
@@ -24,6 +23,17 @@ interface ExerciseProgress {
   currentSet: number;
   weight:     string;
   completed:  boolean;
+}
+
+interface BufferedSetEntry {
+  exerciseName:    string;
+  cardExerciseId:  number;
+  exerciseId:      number;
+  setNumber:       number;
+  reps:            number;
+  weight:          number | null;
+  exerciseType:    'reps' | 'time';
+  skipped?:        boolean;
 }
 
 type TimedPhase = 'idle' | 'pre' | 'running' | 'done';
@@ -106,12 +116,53 @@ export default function AllenamentoAttivoScreen() {
   const [restLeft,        setRestLeft]        = useState(0);
   const [started,         setStarted]         = useState(false);
   const [isPaused,        setIsPaused]        = useState(false);
-  const [abandonDialog,   setAbandonDialog]   = useState(false);
   // Group round tracking: { [groupId]: currentRound (1-based) }
   const [groupRound,      setGroupRound]      = useState<Record<number, number>>({});
 
+  const [bufferedSets, setBufferedSets] = useState<BufferedSetEntry[]>([]);
+  const bufferedSetsRef = useRef<BufferedSetEntry[]>([]);
+
+  const progressRef = useRef<ExerciseProgress[]>([]);
+
+  useEffect(() => {
+    progressRef.current = progress;
+  }, [progress]);
+
   const [timedPhase, setTimedPhase] = useState<TimedPhase>('idle');
   const [timedLeft,  setTimedLeft]  = useState(0);
+
+  const enqueueBufferedSet = (entry: BufferedSetEntry) => {
+    bufferedSetsRef.current = [...bufferedSetsRef.current, entry];
+    setBufferedSets(bufferedSetsRef.current);
+  };
+
+  const buildBufferedSet = (
+    idx: number,
+    setNumber: number,
+    weightStr: string,
+    skipped = false,
+  ): BufferedSetEntry => {
+    const ex = exercisesRef.current[idx];
+    return {
+      exerciseName:   ex.exercise_name,
+      cardExerciseId: ex.id,
+      exerciseId:     ex.exercise_id,
+      setNumber,
+      reps:           ex.exercise_type === 'time' ? (ex.duration ?? 0) : ex.reps,
+      weight:         ex.exercise_type === 'time' ? null : (weightStr ? parseFloat(weightStr) : null),
+      exerciseType:   ex.exercise_type === 'time' ? 'time' : 'reps',
+      skipped,
+    };
+  };
+
+  const commitSetImmediately = (
+    idx: number,
+    setNumber: number,
+    weightStr: string,
+    skipped = false,
+  ) => {
+    enqueueBufferedSet(buildBufferedSet(idx, setNumber, weightStr, skipped));
+  };
 
   // Refs mirror state for interval callback
   const sessionIdRef       = useRef<number | null>(null);
@@ -130,6 +181,13 @@ export default function AllenamentoAttivoScreen() {
   const groupRoundRef      = useRef<Record<number, number>>({});
   const postRestIdxRef     = useRef<number | null>(null);
   const postRestGroupRef   = useRef<{ groupId: number; round: number } | null>(null);
+  // Timestamp-based timing — background-safe (no tick drift)
+  const workoutStartTimeRef = useRef<number | null>(null); // Date.now() when started
+  const totalPausedMsRef    = useRef(0);                   // cumulative ms paused
+  const pauseStartMsRef     = useRef<number | null>(null); // Date.now() when pause began
+  const restEndTimeRef      = useRef<number | null>(null); // Date.now() when rest ends
+  const timedStartTimeRef   = useRef<number>(0);           // Date.now() when timed phase began
+  const timedTotalDurRef    = useRef<number>(0);           // duration of current timed phase (s)
 
   useEffect(() => {
     Notifications.requestPermissionsAsync();
@@ -149,12 +207,29 @@ export default function AllenamentoAttivoScreen() {
     const interval = setInterval(() => {
       if (!startedRef.current || isPausedRef.current) return;
 
-      setElapsed((prev) => prev + 1);
+      // ── Elapsed workout time (timestamp-based, drift-free) ──────────────────
+      if (workoutStartTimeRef.current !== null) {
+        const newElapsed = Math.floor(
+          (Date.now() - workoutStartTimeRef.current - totalPausedMsRef.current) / 1000
+        );
+        setElapsed(newElapsed);
+      }
 
-      if (isRestingRef.current) {
-        if (restLeftRef.current <= 1) {
-          restLeftRef.current  = 0;
-          isRestingRef.current = false;
+      // ── Rest countdown ──────────────────────────────────────────────────────
+      if (isRestingRef.current && restEndTimeRef.current !== null) {
+        const newRestLeft = Math.max(0, Math.ceil((restEndTimeRef.current - Date.now()) / 1000));
+        restLeftRef.current = newRestLeft;
+        setRestLeft(newRestLeft);
+
+        if (newRestLeft <= 0) {
+          // Salva il set completato alla fine del recupero
+          const idx = activeIdxRef.current;
+          const prog = progressRef.current[idx];
+          if (prog) commitSetImmediately(idx, prog.currentSet, prog.weight);
+
+          restEndTimeRef.current  = null;
+          restLeftRef.current     = 0;
+          isRestingRef.current    = false;
           setIsResting(false);
           setRestLeft(0);
           if (notifIdRef.current) {
@@ -177,38 +252,39 @@ export default function AllenamentoAttivoScreen() {
             groupRoundRef.current = next;
             setGroupRound(next);
           }
-        } else {
-          restLeftRef.current -= 1;
-          setRestLeft(restLeftRef.current);
         }
         return;
       }
 
-      // Timed exercise countdown
-      if (timedPhaseRef.current === 'pre') {
-        if (timedLeftRef.current <= 1) {
-          const ex  = exercisesRef.current[activeIdxRef.current];
-          const dur = ex?.duration ?? 30;
-          timedLeftRef.current  = dur;
-          timedPhaseRef.current = 'running';
-          setTimedPhase('running');
-          setTimedLeft(dur);
-          Vibration.vibrate([0, 200, 100, 200]);
-        } else {
-          timedLeftRef.current -= 1;
-          setTimedLeft(timedLeftRef.current);
-        }
-      } else if (timedPhaseRef.current === 'running') {
-        if (timedLeftRef.current <= 1) {
-          timedLeftRef.current  = 0;
-          timedPhaseRef.current = 'done';
-          setTimedPhase('done');
-          setTimedLeft(0);
-          const fb = getTimerFeedbackSync();
-          if (fb === 'vibration' || fb === 'both') Vibration.vibrate(VIBRATION_PATTERN);
-        } else {
-          timedLeftRef.current -= 1;
-          setTimedLeft(timedLeftRef.current);
+      // ── Timed exercise countdown ────────────────────────────────────────────
+      if (timedPhaseRef.current === 'pre' || timedPhaseRef.current === 'running') {
+        const phaseElapsed = Math.floor((Date.now() - timedStartTimeRef.current) / 1000);
+        const newLeft = Math.max(0, timedTotalDurRef.current - phaseElapsed);
+        timedLeftRef.current = newLeft;
+        setTimedLeft(newLeft);
+
+        if (newLeft <= 0) {
+          if (timedPhaseRef.current === 'pre') {
+            // Pre-countdown done → start exercise timer
+            const ex  = exercisesRef.current[activeIdxRef.current];
+            const dur = ex?.duration ?? 30;
+            timedStartTimeRef.current = Date.now();
+            timedTotalDurRef.current  = dur;
+            timedPhaseRef.current     = 'running';
+            setTimedPhase('running');
+            setTimedLeft(dur);
+            Vibration.vibrate([0, 200, 100, 200]);
+          } else {
+            // Exercise timer done → commit set
+            const idx = activeIdxRef.current;
+            const prog = progressRef.current[idx];
+            if (prog) commitSetImmediately(idx, prog.currentSet, prog.weight);
+            timedPhaseRef.current = 'done';
+            setTimedPhase('done');
+            setTimedLeft(0);
+            const fb = getTimerFeedbackSync();
+            if (fb === 'vibration' || fb === 'both') Vibration.vibrate(VIBRATION_PATTERN);
+          }
         }
       }
     }, 1000);
@@ -236,13 +312,55 @@ export default function AllenamentoAttivoScreen() {
     const next = !isPausedRef.current;
     isPausedRef.current = next;
     setIsPaused(next);
+    if (next) {
+      // Pausing — record timestamp
+      pauseStartMsRef.current = Date.now();
+    } else {
+      // Resuming — accumulate paused duration and shift timestamp-based timers
+      if (pauseStartMsRef.current !== null) {
+        const pausedMs = Date.now() - pauseStartMsRef.current;
+        totalPausedMsRef.current += pausedMs;
+        // Extend rest/timed end-times so they don't consume pause time
+        if (restEndTimeRef.current !== null) {
+          restEndTimeRef.current += pausedMs;
+        }
+        if (timedPhaseRef.current === 'pre' || timedPhaseRef.current === 'running') {
+          timedStartTimeRef.current += pausedMs;
+        }
+        pauseStartMsRef.current = null;
+      }
+    }
   };
 
-  const confirmAbandon = () => setAbandonDialog(true);
+  const discardSession = () => {
+    if (sessionIdRef.current) deleteSession(sessionIdRef.current);
+    navigation.goBack();
+  };
+
+  const saveSessionAndExit = () => {
+    const durationS = elapsed + 1;
+    navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
+  };
+
+  const confirmAbandon = () => {
+    Alert.alert(
+      'Modifiche in corso',
+      'Cosa vuoi fare prima di uscire?',
+      [
+        { text: 'Rimani', style: 'cancel' },
+        { text: 'Salva', onPress: saveSessionAndExit },
+        { text: 'Annulla modifiche', style: 'destructive', onPress: discardSession },
+      ]
+    );
+  };
 
   const handleAvvia = () => {
-    sessionIdRef.current = createSession(planId, cardId);
-    startedRef.current   = true;
+    bufferedSetsRef.current = [];
+    setBufferedSets([]);
+    sessionIdRef.current      = createSession(planId, cardId);
+    workoutStartTimeRef.current = Date.now();
+    totalPausedMsRef.current    = 0;
+    startedRef.current        = true;
     setStarted(true);
   };
 
@@ -254,22 +372,18 @@ export default function AllenamentoAttivoScreen() {
     });
   };
 
-  // Persist a set to the session log
-  const persistSet = (exerciseIdx: number, setNumber: number, weightStr: string) => {
+  // Queue a set in the temporary buffer instead of writing immediately to the database.
+  const persistSet = (exerciseIdx: number, setNumber: number, weightStr: string, skipped = false) => {
     const ex = exercisesRef.current[exerciseIdx];
     if (!sessionIdRef.current || !ex) return;
-    if (ex.exercise_type === 'time') {
-      saveSet(sessionIdRef.current, ex.id, ex.exercise_id, setNumber, ex.duration ?? 0, null, 'time');
-    } else {
-      const w = weightStr ? parseFloat(weightStr) : null;
-      saveSet(sessionIdRef.current, ex.id, ex.exercise_id, setNumber, ex.reps, isNaN(w as number) ? null : w, 'reps');
-    }
+    enqueueBufferedSet(buildBufferedSet(exerciseIdx, setNumber, weightStr, skipped));
   };
 
   const startRest = async (restTime: number) => {
-    restTotalRef.current = restTime;
-    restLeftRef.current  = restTime;
-    isRestingRef.current = true;
+    restTotalRef.current   = restTime;
+    restLeftRef.current    = restTime;
+    restEndTimeRef.current = Date.now() + restTime * 1000;
+    isRestingRef.current   = true;
     setRestLeft(restTime);
     setIsResting(true);
     try {
@@ -279,8 +393,10 @@ export default function AllenamentoAttivoScreen() {
   };
 
   const startTimedExercise = () => {
-    timedLeftRef.current  = PRE_COUNTDOWN_S;
-    timedPhaseRef.current = 'pre';
+    timedStartTimeRef.current = Date.now();
+    timedTotalDurRef.current  = PRE_COUNTDOWN_S;
+    timedLeftRef.current      = PRE_COUNTDOWN_S;
+    timedPhaseRef.current     = 'pre';
     setTimedPhase('pre');
     setTimedLeft(PRE_COUNTDOWN_S);
     Vibration.vibrate(100);
@@ -305,8 +421,7 @@ export default function AllenamentoAttivoScreen() {
     if (gi.lastIdx >= exercisesRef.current.length - 1) {
       finishedRef.current = true;
       const durationS = elapsed + 1;
-      if (sessionIdRef.current) finalizeSession(sessionIdRef.current, durationS);
-      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS });
+      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
     } else {
       setActiveIdx(gi.lastIdx + 1);
     }
@@ -317,7 +432,6 @@ export default function AllenamentoAttivoScreen() {
     const idx  = exerciseIdx ?? activeIdx;
     const prog = progress[idx];
     const ex   = exercisesRef.current[idx];
-    persistSet(idx, prog.currentSet, prog.weight);
     setProgress((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], currentSet: prog.currentSet + 1 };
@@ -331,7 +445,7 @@ export default function AllenamentoAttivoScreen() {
   const handleProssimo = (exerciseIdx?: number) => {
     const idx  = exerciseIdx ?? activeIdx;
     const prog = progress[idx];
-    persistSet(idx, prog.currentSet, prog.weight);
+    commitSetImmediately(idx, prog.currentSet, prog.weight);
     setProgress((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], completed: true };
@@ -342,8 +456,7 @@ export default function AllenamentoAttivoScreen() {
     if (idx >= exercisesRef.current.length - 1) {
       finishedRef.current = true;
       const durationS = elapsed + 1;
-      if (sessionIdRef.current) finalizeSession(sessionIdRef.current, durationS);
-      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS });
+      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
     } else {
       setActiveIdx(idx + 1);
     }
@@ -354,7 +467,7 @@ export default function AllenamentoAttivoScreen() {
   // SUPERSET — no rest between exercises within a round
   const handleSuperset_continue = (idx: number, gi: GroupInfo) => {
     const round = groupRoundRef.current[gi.groupId] ?? 1;
-    persistSet(idx, round, progress[idx]?.weight ?? '');
+    commitSetImmediately(idx, round, progress[idx]?.weight ?? '');
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     setActiveIdx(idx + 1);
@@ -402,45 +515,13 @@ export default function AllenamentoAttivoScreen() {
     }
   };
 
-  // SIMPLE GROUP — 1 round, per-exercise rest between exercises, no rest after last
-  const handleSimple_continue = async (idx: number, gi: GroupInfo) => {
-    persistSet(idx, 1, progress[idx]?.weight ?? '');
-    timedPhaseRef.current = 'idle';
-    setTimedPhase('idle');
-    postRestIdxRef.current = idx + 1;
-    await startRest(gi.exRestTime);
-  };
-
-  const handleSimple_last = (idx: number, gi: GroupInfo) => {
-    persistSet(idx, 1, progress[idx]?.weight ?? '');
-    markGroupCompleted(gi.groupId);
-    timedPhaseRef.current = 'idle';
-    setTimedPhase('idle');
-    if (gi.lastIdx >= exercisesRef.current.length - 1) {
-      finishedRef.current = true;
-      const durationS = elapsed + 1;
-      if (sessionIdRef.current) finalizeSession(sessionIdRef.current, durationS);
-      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS });
-    } else {
-      setActiveIdx(gi.lastIdx + 1);
-    }
-  };
-
   const handleTimedAction = async () => {
     if (timedPhase === 'idle') {
       startTimedExercise();
       return;
     }
     if (timedPhase !== 'done') return;
-    // Done: delegate to group or standalone action
-    const gi = getGroupInfo(exercisesRef.current, activeIdx);
-    if (gi) {
-      handleGroupAction(gi);
-    } else {
-      const isLastSet = (progress[activeIdx]?.currentSet ?? 1) >= exercises[activeIdx]?.sets;
-      if (isLastSet) handleProssimo();
-      else           await handleRecupero();
-    }
+    await handleMainAction();
   };
 
   const handleGroupAction = async (gi: GroupInfo) => {
@@ -450,18 +531,100 @@ export default function AllenamentoAttivoScreen() {
       } else {
         await handleSuperset_endRound(activeIdx, gi);
       }
-    } else if (gi.type === 'circuit') {
+    } else { // circuit
       if (!gi.isLastInGroup) {
         await handleCircuit_restNext(activeIdx, gi);
       } else {
         await handleCircuit_endRound(activeIdx, gi);
       }
-    } else {
-      // simple
-      if (!gi.isLastInGroup) {
-        await handleSimple_continue(activeIdx, gi);
+    }
+  };
+
+  const handleSkip = () => {
+    const idx = activeIdx;
+    const ex = exercisesRef.current[idx];
+    if (!ex) return;
+    const prog = progress[idx] ?? { currentSet: 1, weight: '', completed: false };
+    timedPhaseRef.current = 'idle';
+    setTimedPhase('idle');
+
+    if (gi) {
+      const round = groupRoundRef.current[gi.groupId] ?? 1;
+      if (gi.type === 'superset') {
+        if (!gi.isLastInGroup) {
+          setActiveIdx(idx + 1);
+          return;
+        }
+        if (round < gi.rounds) {
+          const nextRound = round + 1;
+          const next = { ...groupRoundRef.current, [gi.groupId]: nextRound };
+          groupRoundRef.current = next;
+          setGroupRound(next);
+          setActiveIdx(gi.firstIdx);
+        } else {
+          advancePastGroup(gi);
+        }
+      } else if (gi.type === 'circuit') {
+        if (!gi.isLastInGroup) {
+          setActiveIdx(idx + 1);
+          return;
+        }
+        if (round < gi.rounds) {
+          const nextRound = round + 1;
+          const next = { ...groupRoundRef.current, [gi.groupId]: nextRound };
+          groupRoundRef.current = next;
+          setGroupRound(next);
+          setActiveIdx(gi.firstIdx);
+        } else {
+          advancePastGroup(gi);
+        }
       } else {
-        handleSimple_last(activeIdx, gi);
+        // simple — skip set by set like standalone
+        const simpleIsLastSet = prog.currentSet >= (ex.sets ?? 1);
+        if (!simpleIsLastSet) {
+          setProgress((prev) => {
+            const next = [...prev];
+            next[idx] = { ...next[idx], currentSet: prog.currentSet + 1 };
+            return next;
+          });
+        } else {
+          setProgress((prev) => {
+            const next = [...prev];
+            next[idx] = { ...next[idx], completed: true };
+            return next;
+          });
+          if (!gi.isLastInGroup) {
+            setActiveIdx(idx + 1);
+          } else if (gi.lastIdx >= exercisesRef.current.length - 1) {
+            finishedRef.current = true;
+            const durationS = elapsed + 1;
+            navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
+          } else {
+            setActiveIdx(gi.lastIdx + 1);
+          }
+        }
+      }
+    } else {
+      const isLastSet = prog.currentSet >= (ex.sets ?? 1);
+      if (isLastSet) {
+        setProgress((prev) => {
+          const next = [...prev];
+          next[idx] = { ...next[idx], completed: true };
+          return next;
+        });
+        if (idx >= exercisesRef.current.length - 1) {
+          finishedRef.current = true;
+          const durationS = elapsed + 1;
+          navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
+        } else {
+          setActiveIdx(idx + 1);
+        }
+      } else {
+        setProgress((prev) => {
+          const next = [...prev];
+          next[idx] = { ...next[idx], currentSet: prog.currentSet + 1 };
+          return next;
+        });
       }
     }
   };
@@ -481,8 +644,10 @@ export default function AllenamentoAttivoScreen() {
   const gi          = getGroupInfo(exercises, activeIdx);
   const inGroup     = gi !== null;
   const curRound    = inGroup ? (groupRound[gi!.groupId] ?? 1) : 1;
-  const effectiveSets = inGroup ? gi!.rounds : (currentEx?.sets ?? 1);
-  const isLastSet   = inGroup ? (curRound >= gi!.rounds) : (currentProg.currentSet >= (currentEx?.sets ?? 1));
+  const effectiveSets = inGroup && gi!.type !== 'simple' ? gi!.rounds : (currentEx?.sets ?? 1);
+  const isLastSet   = inGroup && gi!.type !== 'simple'
+    ? (curRound >= gi!.rounds)
+    : (currentProg.currentSet >= (currentEx?.sets ?? 1));
   const restPct     = restTotalRef.current > 0 ? (restLeft / restTotalRef.current) * 100 : 0;
   const isTimedEx   = currentEx?.exercise_type === 'time';
   const isBodyweightEx = currentEx?.exercise_type === 'bodyweight';
@@ -516,16 +681,16 @@ export default function AllenamentoAttivoScreen() {
       case 'pre':     return `Preparati... ${timedLeft}s`;
       case 'running': return `In corso  ${timedLeft}s`;
       case 'done': {
-        if (inGroup) {
+        if (inGroup && gi!.type !== 'simple') {
           if (gi!.type === 'superset' && !gi!.isLastInGroup) return 'Prosegui →';
-          if (gi!.type === 'simple') {
-            if (!gi!.isLastInGroup) return `Recupero (${gi!.exRestTime}s)`;
-            return gi!.lastIdx >= exercises.length - 1 ? 'Fine allenamento' : 'Prossimo esercizio';
-          }
           if (isLastSet) return gi!.lastIdx >= exercises.length - 1 ? 'Fine allenamento' : 'Prossimo esercizio';
           return gi!.type === 'superset' ? `Recupero (${gi!.restTime}s)` : `Fine giro ${curRound}/${gi!.rounds}`;
         }
-        return isLastSet ? (activeIdx >= exercises.length - 1 ? 'Fine allenamento' : 'Prossimo esercizio') : 'Recupero';
+        // standalone or simple group
+        const isEnd = inGroup
+          ? (gi!.isLastInGroup && gi!.lastIdx >= exercises.length - 1)
+          : (activeIdx >= exercises.length - 1);
+        return isLastSet ? (isEnd ? 'Fine allenamento' : 'Prossimo esercizio') : 'Recupero';
       }
     }
   };
@@ -535,7 +700,7 @@ export default function AllenamentoAttivoScreen() {
   let actionColor: string = COLORS.primary;
   let actionIcon  = 'arrow-right';
 
-  if (inGroup) {
+  if (inGroup && gi!.type !== 'simple') {
     if (gi!.type === 'superset') {
       if (!gi!.isLastInGroup) {
         actionLabel = 'Prosegui →';
@@ -550,7 +715,7 @@ export default function AllenamentoAttivoScreen() {
         actionColor = COLORS.primary;
         actionIcon  = 'stopwatch';
       }
-    } else if (gi!.type === 'circuit') {
+    } else { // circuit
       if (!gi!.isLastInGroup) {
         actionLabel = `Recupero (${formatTime(gi!.exRestTime)})`;
         actionColor = COLORS.primary;
@@ -564,36 +729,51 @@ export default function AllenamentoAttivoScreen() {
         actionColor = COLORS.primary;
         actionIcon  = 'redo-alt';
       }
-    } else {
-      // simple group
-      if (!gi!.isLastInGroup) {
-        actionLabel = `Recupero (${formatTime(gi!.exRestTime)})`;
-        actionColor = COLORS.success;
-        actionIcon  = 'stopwatch';
-      } else {
-        actionLabel = gi!.lastIdx >= exercises.length - 1 ? 'Fine allenamento' : 'Prossimo esercizio';
-        actionColor = COLORS.success;
-        actionIcon  = gi!.lastIdx >= exercises.length - 1 ? 'trophy' : 'arrow-right';
-      }
     }
   } else {
-    // standalone
-    if (isLastSet) {
-      actionLabel = activeIdx >= exercises.length - 1 ? 'Fine allenamento' : 'Prossimo esercizio';
-      actionColor = COLORS.success;
-      actionIcon  = activeIdx >= exercises.length - 1 ? 'trophy' : 'arrow-right';
-    } else {
+    // standalone or simple group — each exercise runs its own sets
+    if (!isLastSet) {
       actionLabel = `Recupero (${currentEx?.rest_time}s)`;
       actionColor = COLORS.primary;
       actionIcon  = 'stopwatch';
+    } else {
+      const isEnd = inGroup
+        ? (gi!.isLastInGroup && gi!.lastIdx >= exercises.length - 1)
+        : (activeIdx >= exercises.length - 1);
+      actionLabel = isEnd ? 'Fine allenamento' : 'Prossimo esercizio';
+      actionColor = COLORS.success;
+      actionIcon  = isEnd ? 'trophy' : 'arrow-right';
     }
   }
 
   const handleMainAction = async () => {
-    if (inGroup) {
+    if (inGroup && gi!.type !== 'simple') {
       await handleGroupAction(gi!);
     } else if (isLastSet) {
-      handleProssimo();
+      if (inGroup && gi!.type === 'simple') {
+        // Simple group: commit set, mark exercise done, advance within group or past it
+        commitSetImmediately(activeIdx, currentProg.currentSet, currentProg.weight);
+        setProgress((prev) => {
+          const next = [...prev];
+          next[activeIdx] = { ...next[activeIdx], completed: true };
+          return next;
+        });
+        timedPhaseRef.current = 'idle';
+        setTimedPhase('idle');
+        if (gi!.isLastInGroup) {
+          if (gi!.lastIdx >= exercisesRef.current.length - 1) {
+            finishedRef.current = true;
+            const durationS = elapsed + 1;
+            navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
+          } else {
+            setActiveIdx(gi!.lastIdx + 1);
+          }
+        } else {
+          setActiveIdx(activeIdx + 1);
+        }
+      } else {
+        handleProssimo();
+      }
     } else {
       await handleRecupero();
     }
@@ -697,7 +877,7 @@ export default function AllenamentoAttivoScreen() {
                       {groupDone
                         ? (exGi.type === 'simple' ? 'Completato' : `${exGi.rounds} giri completati`)
                         : (exGi.type === 'simple'
-                            ? 'Esegui ogni esercizio in sequenza'
+                            ? 'Esercizi con serie complete'
                             : `Giro ${curGrpRound} di ${exGi.rounds}  ·  Recupero ${formatTime(exGi.restTime)}`)
                       }
                     </Text>
@@ -727,6 +907,12 @@ export default function AllenamentoAttivoScreen() {
                             {e.exercise_name}
                           </Text>
                           <View style={styles.tagsRow}>
+                            {exGi.type === 'simple' && (
+                              <View style={styles.tag}>
+                                <FontAwesome5 name="layer-group" size={9} color={COLORS.textMuted} solid />
+                                <Text style={styles.tagText}>{e.sets} serie</Text>
+                              </View>
+                            )}
                             {gTimed ? (
                               <View style={[styles.tag, styles.tagTime]}>
                                 <FontAwesome5 name="stopwatch" size={9} color={COLORS.accent} solid />
@@ -744,19 +930,32 @@ export default function AllenamentoAttivoScreen() {
                               </View>
                             )}
                             {(() => {
-                              const isLastExerciseInGroup = e.id === exercises[exGi.lastIdx]?.id;
-                              return (exGi.type === 'circuit' || (exGi.type === 'simple' && !isLastExerciseInGroup)) && (
-                                <View style={styles.tag}>
-                                  <FontAwesome5 name="stopwatch" size={9} color={COLORS.textMuted} solid />
-                                  <Text style={styles.tagText}>{e.rest_time}s</Text>
-                                </View>
-                              );
+                              if (exGi.type === 'simple') {
+                                return (
+                                  <View style={styles.tag}>
+                                    <FontAwesome5 name="stopwatch" size={9} color={COLORS.textMuted} solid />
+                                    <Text style={styles.tagText}>{e.rest_time}s</Text>
+                                  </View>
+                                );
+                              }
+                              if (exGi.type === 'circuit') {
+                                const isLastExerciseInGroup = e.id === exercises[exGi.lastIdx]?.id;
+                                return !isLastExerciseInGroup && (
+                                  <View style={styles.tag}>
+                                    <FontAwesome5 name="stopwatch" size={9} color={COLORS.textMuted} solid />
+                                    <Text style={styles.tagText}>{e.rest_time}s</Text>
+                                  </View>
+                                );
+                              }
+                              return null;
                             })()}
                           </View>
                           {gActive && !gDone && started && (
                             <View style={styles.activeDetails}>
                               <Text style={[styles.setLabel, { color: typeColor }]}>
-                                {exGi.type === 'simple' ? 'Serie unica' : `Giro ${curGrpRound} di ${exGi.rounds}`}
+                                {exGi.type === 'simple'
+                                  ? `Serie ${gProg.currentSet} di ${e.sets}`
+                                  : `Giro ${curGrpRound} di ${exGi.rounds}`}
                               </Text>
                               {gTimed ? (
                                 <View style={styles.timedBox}>
@@ -963,6 +1162,13 @@ export default function AllenamentoAttivoScreen() {
       ) : isTimedEx ? (
         <View style={styles.actionRow}>
           <TouchableOpacity
+            style={styles.skipBtn}
+            onPress={handleSkip}
+            activeOpacity={0.85}
+          >
+            <FontAwesome5 name="forward" size={16} color={COLORS.white} solid />
+          </TouchableOpacity>
+          <TouchableOpacity
             style={[
               styles.actionBtn,
               timedPhase === 'idle'    ? styles.actionBtnTimedIdle :
@@ -988,6 +1194,13 @@ export default function AllenamentoAttivoScreen() {
       ) : (
         <View style={styles.actionRow}>
           <TouchableOpacity
+            style={styles.skipBtn}
+            onPress={handleSkip}
+            activeOpacity={0.85}
+          >
+            <FontAwesome5 name="forward" size={16} color={COLORS.white} solid />
+          </TouchableOpacity>
+          <TouchableOpacity
             style={[styles.actionBtn, { backgroundColor: actionColor }]}
             onPress={handleMainAction}
             activeOpacity={0.85}
@@ -998,21 +1211,6 @@ export default function AllenamentoAttivoScreen() {
         </View>
       )}
 
-      <ConfirmDialog
-        visible={abandonDialog}
-        title="Interrompere l'allenamento?"
-        message={started ? 'Le serie completate andranno perse.' : 'Tornare alla selezione scheda?'}
-        icon="stop-circle"
-        confirmLabel={started ? 'Interrompi' : 'Esci'}
-        cancelLabel="Continua"
-        destructive
-        onCancel={() => setAbandonDialog(false)}
-        onConfirm={() => {
-          setAbandonDialog(false);
-          if (sessionIdRef.current) deleteSession(sessionIdRef.current);
-          navigation.goBack();
-        }}
-      />
     </View>
   );
 }
@@ -1182,6 +1380,11 @@ const styles = StyleSheet.create({
   actionBtn: {
     flex: 1, borderRadius: 16, paddingVertical: 18,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+  },
+  skipBtn: {
+    width: 52, height: 52, borderRadius: 14,
+    backgroundColor: COLORS.surfaceAlt,
+    alignItems: 'center', justifyContent: 'center',
   },
   actionBtnAvvia:    { backgroundColor: COLORS.success },
   actionBtnTimedIdle:{ backgroundColor: COLORS.accent },
