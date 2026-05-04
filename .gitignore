@@ -1,3 +1,6 @@
 node_modules
 .expo
 build
+free-exercise-db-main
+exercise-localizer-it
+split-exercises/py
