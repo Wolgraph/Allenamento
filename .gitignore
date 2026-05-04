@@ -3,4 +3,5 @@ node_modules
 build
 free-exercise-db-main
 exercise-localizer-it
-split-exercises/py
+split_exercises.py
+.expo/devices.json
