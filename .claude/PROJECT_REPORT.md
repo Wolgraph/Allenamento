@@ -1,7 +1,7 @@
 # MyGymTracker — Project Report
 
-**Versione:** 0.1 (bozza)
-**Data:** 2026-04-29
+**Versione:** 0.2
+**Data:** 2026-05-08
 **Piattaforma target:** Android
 **Stack:** React Native + Expo
 
@@ -29,21 +29,43 @@ L'app è pensata per un singolo utente per dispositivo. Il personal trainer può
 ### 2.2 Archivio esercizi
 
 - Esiste un **database globale di esercizi**, condiviso tra tutti i piani.
-- Gli esercizi sono selezionati da un menu a tendina ordinato alfabeticamente.
-- È possibile aggiungere nuovi esercizi al database se non esistono.
-- Ogni esercizio ha: nome (identificatore univoco).
-- Futura espansione prevista: raggruppamento per gruppo muscolare.
+- Gli esercizi sono selezionabili tramite modal di ricerca con filtri per zona muscolare e testo libero.
+- È possibile aggiungere nuovi esercizi al database se non esistono, specificando tipo, descrizione e tag.
+- Ogni esercizio ha: nome (identificatore univoco), tipo default, descrizione facoltativa.
+- Gli esercizi sono **categorizzati per zona muscolare** (tag di tipo `zone`) e **per muscolo specifico** (tag di tipo `muscle`), usati per filtrare la ricerca e raggruppare le liste in sezioni.
+- Una schermata **Catalogo** dedicata permette di sfogliare, cercare e gestire l'intero archivio esercizi.
 
 ### 2.3 Configurazione esercizi in una scheda
 
-Per ogni esercizio inserito in una scheda si configurano:
+Ogni esercizio inserito in una scheda ha un **tipo** che determina i campi disponibili:
 
-| Campo | Valori |
+| Tipo | Descrizione |
 |---|---|
-| Serie | Da 1 a 7 (menu a tendina) |
-| Ripetizioni | Da 1 a 20 (menu a tendina) |
-| Tempo di recupero | Da 30s a 120s, passo 15s (menu a tendina) |
-| Note esercizio | Testo libero facoltativo |
+| `reps` | Esercizio classico con peso e ripetizioni |
+| `time` | Esercizio a tempo (es. plank, tapis roulant) — si configura la durata in secondi |
+| `bodyweight` | Corpo libero — si registrano le ripetizioni senza peso |
+
+Per ogni esercizio si configurano:
+
+| Campo | Tipo applicabile | Valori |
+|---|---|---|
+| Serie | tutti | Da 1 a 10 |
+| Ripetizioni | `reps`, `bodyweight` | Da 1 a 30 |
+| Durata | `time` | Da 10s a 3000s, passo 5s (accelera a 30s e 60s dopo tap ripetuti) |
+| Tempo di recupero | tutti | Da 0s a 300s, passo 15s (accelera a 30s e 60s dopo tap ripetuti) |
+| Note esercizio | tutti | Testo libero facoltativo |
+
+### 2.3bis Gruppi esercizi
+
+Gli esercizi in una scheda possono essere raggruppati in blocchi con logica condivisa:
+
+| Tipo gruppo | Comportamento |
+|---|---|
+| **Superserie** | Esercizi eseguiti in sequenza senza recupero intermedio; recupero unico al termine di ogni giro |
+| **Circuito** | Esercizi eseguiti in sequenza con recupero tra un esercizio e il successivo; recupero aggiuntivo al termine di ogni giro |
+| **Gruppo semplice** | Esercizi eseguiti in sequenza con recupero tra l'uno e l'altro; 1 solo giro |
+
+I gruppi hanno: numero di giri, tempo di recupero tra giri (superserie/circuito), tempo di recupero tra esercizi (circuito/gruppo semplice).
 
 ### 2.4 Schermata piani attivi
 
@@ -61,24 +83,46 @@ Per ogni esercizio inserito in una scheda si configurano:
 
 #### Layout
 
-- **In alto:** cronometro che misura la durata totale della sessione (hh:mm:ss), visibile per tutta la durata.
-- **Centro:** lista degli esercizi della scheda con, per ciascuno:
-  - Nome esercizio
-  - Serie × Ripetizioni × Recupero configurati
-  - **Freccia sinistra** che indica l'esercizio corrente
-  - **Riga peso per serie:** un campo di testo per ogni serie dell'esercizio. Il campo è precompilato con il peso usato l'ultima volta che quell'esercizio è stato eseguito con lo stesso numero di ripetizioni; se non ci sono dati precedenti, il campo è vuoto. Il valore persiste tra una serie e l'altra (l'utente cambia solo se necessario).
-- **In basso:** pulsante azione.
+- **In alto:** cronometro (hh:mm:ss), nome scheda, contatore esercizi completati, pulsanti pausa e stop.
+- **Centro:** lista esercizi della scheda. Gli esercizi standalone e i gruppi (superserie/circuito) sono visualizzati con stili distinti. Per ogni esercizio attivo:
+  - Nome esercizio, badge tipo (serie/tempo/corpo libero), recupero configurato
+  - **Indicatore esercizio corrente** (icona play) e **completato** (flag a scacchi)
+  - **Campo peso** (tipo `reps`): precompilato con il peso dell'ultima sessione per lo stesso numero di reps; aggiornabile per ogni serie
+  - **Timer visivo** (tipo `time`): pre-countdown da 5s, poi conto alla rovescia con barra di progresso
+  - **Badge corpo libero** (tipo `bodyweight`): nessun campo peso
+- **In basso:** pulsante azione contestuale.
 
-#### Flusso serie / recupero
+#### Flusso serie / recupero (esercizi standalone)
 
-1. L'utente esegue la serie corrente.
-2. Preme **"Recupero"** → parte un conto alla rovescia con la durata configurata per quell'esercizio.
-3. Alla fine del timer scatta la notifica (suono e/o vibrazione, configurabile).
-4. L'utente può avviare la serie successiva.
-5. Questo ciclo si ripete per `N - 1` recuperi (se le serie sono 3, i recuperi sono 2).
-6. Dopo l'ultima serie il pulsante diventa **"Prossimo"**: la freccia sinistra si trasforma in una **flag verde**, la freccia passa all'esercizio successivo.
-7. Premendo "Prossimo" si passa direttamente all'esercizio successivo senza timer intermedio.
-8. Al termine dell'ultimo esercizio appare la schermata di **riepilogo sessione**.
+1. L'utente esegue la serie corrente (inserisce il peso se tipo `reps`).
+2. Preme **"Recupero (Xs)"** → parte il conto alla rovescia.
+3. Alla fine del timer scatta la notifica (suono e/o vibrazione, configurabile); l'utente può anche saltare il recupero.
+4. Ciclo per `N - 1` recuperi; all'ultima serie il pulsante diventa **"Prossimo esercizio"**.
+5. Al termine dell'ultimo esercizio il pulsante diventa **"Fine allenamento"** → riepilogo sessione.
+
+#### Flusso gruppi esercizi
+
+- **Superserie:** ogni esercizio del gruppo mostra "Prosegui →" (nessun recupero); al termine dell'ultimo esercizio del giro parte il recupero tra giri.
+- **Circuito:** recupero tra ogni esercizio all'interno del giro; recupero aggiuntivo tra giri.
+- **Gruppo semplice:** recupero tra esercizi, un solo giro.
+- Il contatore giro corrente / totale giri è visibile nell'intestazione del blocco gruppo.
+
+#### Esercizi a tempo (tipo `time`)
+
+1. Pulsante **"Inizia serie"** → pre-countdown di 5s con vibrazione.
+2. Parte il conto alla rovescia con barra di progresso visiva.
+3. Alla fine vibrazione/notifica → il pulsante mostra l'azione successiva (recupero o prossimo).
+
+#### Pausa e abbandono
+
+- Pulsante **Pausa** sospende cronometro e timer recupero.
+- Pulsante **Stop** apre dialog di conferma; in caso di abbandono la sessione non viene salvata.
+
+#### Persistenza anti-crash
+
+- A ogni azione viene aggiornato un file JSON temporaneo (`session_draft.json`) con lo stato completo (pesi inseriti, serie corrente, giro gruppo, tempo trascorso).
+- Se l'app viene chiusa forzatamente, alla riapertura viene proposto di **riprendere** o **annullare** la sessione interrotta.
+- Il salvataggio nel database avviene in un unico passaggio solo al termine dell'allenamento; il file draft viene cancellato (con await) prima di navigare al riepilogo.
 
 #### Timer in background
 
@@ -87,9 +131,12 @@ Per ogni esercizio inserito in una scheda si configurano:
 
 ### 2.7 Riepilogo fine allenamento
 
-- Durata totale della sessione.
-- Lista esercizi con i pesi registrati per ogni serie.
-- Pulsante per salvare e chiudere la sessione.
+La sessione è già salvata nel database prima di navigare qui (tramite `bulkSaveAndFinalize` al termine dell'allenamento).
+
+- **Header:** icona trofeo, titolo "Allenamento completato!".
+- **Riga statistiche:** durata totale, numero totale di serie, volume totale (somma peso × reps degli esercizi non a tempo; omesso se zero).
+- **Lista esercizi:** griglia di chip, uno per serie; ogni chip mostra il numero di serie (S1, S2…) e il peso in kg (tipo `reps`) oppure la durata in secondi (tipo `time`).
+- **Pulsante "Chiudi":** torna alla schermata di selezione scheda.
 
 ### 2.8 Storico allenamenti
 
@@ -110,13 +157,15 @@ Per ogni esercizio inserito in una scheda si configurano:
 
 ### 2.11 Export storico
 
-- Filtri: per piano, per scheda (facoltativo), per singolo allenamento (facoltativo).
-- Formati: **PDF** (leggibile), **CSV** (per Excel), o **entrambi**.
+- Integrato nella schermata Storico tramite pulsante **"CSV"** nella barra superiore.
+- Filtro opzionale per piano (chip orizzontali); senza filtro attivo esporta tutte le sessioni.
+- Formato: solo **CSV** (compatibile con Excel / Google Sheets), condiviso via intent Android.
 
 ### 2.12 Impostazioni
 
-- **Notifiche timer:** scelta tra suono, vibrazione, entrambi, nessuno.
-- Possibili espansioni future: tema chiaro/scuro, lingua.
+- **Feedback fine recupero:** scelta tra vibrazione, suono, vibrazione + suono, nessuno.
+- **Import piano:** selezione file `.workout` (via DocumentPicker); gli esercizi non presenti vengono aggiunti al DB, poi si naviga alla schermata di conferma import.
+- **Piani archiviati:** lista dei piani con stato `archived`; pulsante "Riattiva" li riporta tra i piani attivi.
 
 ---
 
@@ -125,7 +174,8 @@ Per ogni esercizio inserito in una scheda si configurano:
 - **Offline-first:** tutta l'app funziona senza connessione internet; i dati sono salvati localmente.
 - **Singolo utente per dispositivo.**
 - **Performance:** il timer deve essere preciso anche in background.
-- **Persistenza:** i dati non devono essere persi in caso di chiusura forzata dell'app.
+- **Persistenza anti-crash:** a ogni azione viene aggiornato il file `session_draft.json`; alla successiva apertura l'app rileva il draft e propone di riprendere o annullare la sessione interrotta.
+- **Affidabilità salvataggio:** il salvataggio nel DB avviene in un unico passaggio atomico al termine dell'allenamento (`bulkSaveAndFinalize`), eliminando la possibilità di voci duplicate o parziali.
 
 ---
 
@@ -174,51 +224,82 @@ Per ogni esercizio inserito in una scheda si configurano:
 
 ```
 exercises
-  id          INTEGER PRIMARY KEY
-  name        TEXT UNIQUE NOT NULL
+  id            INTEGER PRIMARY KEY AUTOINCREMENT
+  name          TEXT UNIQUE NOT NULL
+  default_type  TEXT DEFAULT 'reps'   -- 'reps' | 'time' | 'bodyweight'
+  description   TEXT
+  lang          TEXT DEFAULT 'it'
+
+exercise_tags
+  id    INTEGER PRIMARY KEY AUTOINCREMENT
+  name  TEXT UNIQUE NOT NULL
+  type  TEXT NOT NULL              -- 'zone' | 'muscle'
+
+exercise_tag_map
+  exercise_id  INTEGER REFERENCES exercises(id) ON DELETE CASCADE
+  tag_id       INTEGER REFERENCES exercise_tags(id) ON DELETE CASCADE
+  PRIMARY KEY (exercise_id, tag_id)
 
 training_plans
-  id          INTEGER PRIMARY KEY
+  id          INTEGER PRIMARY KEY AUTOINCREMENT
   name        TEXT NOT NULL
   description TEXT
   status      TEXT DEFAULT 'active'   -- 'active' | 'archived'
-  created_at  DATETIME
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 
 workout_cards
-  id          INTEGER PRIMARY KEY
-  plan_id     INTEGER REFERENCES training_plans(id)
+  id          INTEGER PRIMARY KEY AUTOINCREMENT
+  plan_id     INTEGER REFERENCES training_plans(id) ON DELETE CASCADE
   name        TEXT NOT NULL
   description TEXT
   notes       TEXT
-  sort_order  INTEGER
+  sort_order  INTEGER DEFAULT 0
+
+card_tag_map
+  card_id  INTEGER REFERENCES workout_cards(id) ON DELETE CASCADE
+  tag_id   INTEGER REFERENCES exercise_tags(id) ON DELETE CASCADE
+  PRIMARY KEY (card_id, tag_id)
+
+exercise_groups
+  id         INTEGER PRIMARY KEY AUTOINCREMENT
+  card_id    INTEGER REFERENCES workout_cards(id) ON DELETE CASCADE
+  type       TEXT DEFAULT 'superset'  -- 'superset' | 'circuit' | 'simple'
+  name       TEXT
+  rounds     INTEGER DEFAULT 3
+  rest_time  INTEGER DEFAULT 90       -- recupero tra giri (s)
+  sort_order INTEGER DEFAULT 0
 
 card_exercises
-  id          INTEGER PRIMARY KEY
-  card_id     INTEGER REFERENCES workout_cards(id)
-  exercise_id INTEGER REFERENCES exercises(id)
-  sets        INTEGER    -- 1..7
-  reps        INTEGER    -- 1..20
-  rest_time   INTEGER    -- secondi: 30, 45, 60, 75, 90, 105, 120
-  notes       TEXT
-  sort_order  INTEGER
+  id             INTEGER PRIMARY KEY AUTOINCREMENT
+  card_id        INTEGER REFERENCES workout_cards(id) ON DELETE CASCADE
+  exercise_id    INTEGER REFERENCES exercises(id)
+  sets           INTEGER               -- 1..10
+  reps           INTEGER               -- 1..30
+  rest_time      INTEGER               -- 0..300 s
+  notes          TEXT
+  sort_order     INTEGER DEFAULT 0
+  exercise_type  TEXT DEFAULT 'reps'   -- 'reps' | 'time' | 'bodyweight'
+  duration       INTEGER               -- durata in secondi (solo tipo 'time')
+  group_id       INTEGER               -- FK → exercise_groups.id (NULL = standalone)
 
 workout_sessions
-  id          INTEGER PRIMARY KEY
+  id          INTEGER PRIMARY KEY AUTOINCREMENT
   plan_id     INTEGER REFERENCES training_plans(id)
   card_id     INTEGER REFERENCES workout_cards(id)
-  started_at  DATETIME
+  started_at  DATETIME NOT NULL
   ended_at    DATETIME
-  duration_s  INTEGER    -- durata in secondi
+  duration_s  INTEGER                  -- durata in secondi
 
 session_sets
-  id                INTEGER PRIMARY KEY
-  session_id        INTEGER REFERENCES workout_sessions(id)
+  id                INTEGER PRIMARY KEY AUTOINCREMENT
+  session_id        INTEGER REFERENCES workout_sessions(id) ON DELETE CASCADE
   card_exercise_id  INTEGER REFERENCES card_exercises(id)
   exercise_id       INTEGER REFERENCES exercises(id)
-  set_number        INTEGER    -- 1, 2, 3...
-  reps              INTEGER    -- reps effettive (= quelle configurate)
-  weight            REAL       -- kg
-  completed_at      DATETIME
+  set_number        INTEGER NOT NULL
+  reps              INTEGER NOT NULL   -- reps (tipo reps/bodyweight) o durata s (tipo time)
+  weight            REAL               -- kg (NULL per bodyweight e time)
+  completed_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+  exercise_type     TEXT DEFAULT 'reps'
 ```
 
 ---
@@ -229,23 +310,26 @@ session_sets
 App
 ├── Tab: Piani
 │   ├── PianiAttiviScreen          Lista piani attivi + azione archivia
-│   ├── DettaglioPianoScreen       Schede del piano + storico sessioni
+│   ├── DettaglioPianoScreen       Schede del piano + storico sessioni piano
 │   ├── CreaPianoScreen            Nuovo piano (nome, descrizione)
 │   ├── CreaSchedaScreen           Nuova scheda (nome, descrizione, note)
-│   └── AggiungiEsercizioScreen    Selezione da DB + config serie/reps/recupero
+│   ├── DettaglioSchedaScreen      Lista esercizi della scheda + gestione gruppi
+│   ├── AggiungiEsercizioScreen    Selezione esercizio + config tipo/serie/reps/recupero/gruppo
+│   └── ImportSchedaScreen         Anteprima e conferma import file .workout
 │
 ├── Tab: Allenamento
-│   ├── SceltaPianoScreen          (solo se >1 piano attivo)
-│   ├── SceltaSchedaScreen         Lista schede + tooltip ultima scheda
-│   ├── AllenamentoAttivoScreen    Cronometro + lista esercizi + timer recupero
-│   └── RiepilogoScreen            Riepilogo fine sessione + salvataggio
+│   ├── SceltaSchedaScreen         Selezione piano (se >1) + selezione scheda + recupero draft
+│   ├── AllenamentoAttivoScreen    Cronometro + lista esercizi + timer recupero + draft
+│   └── RiepilogoScreen            Statistiche sessione + dettaglio serie per esercizio
 │
 ├── Tab: Storico
-│   ├── StoricoScreen              Filtri (piano, scheda, sessione) + lista
-│   └── EsportaScreen              Scelta formato (PDF / CSV / entrambi)
+│   └── StoricoScreen              Lista sessioni raggruppata per giorno + filtro piano + export CSV
+│
+├── Tab: Catalogo
+│   └── CatalogoScreen             Elenco esercizi + ricerca testo + filtri tag zona/muscolo
 │
 └── Tab: Impostazioni
-    └── ImpostazioniScreen         Notifiche timer, import .workout
+    └── ImpostazioniScreen         Feedback timer + import .workout + piani archiviati
 ```
 
 ---
@@ -306,10 +390,9 @@ Tab Allenamento
 
 ### 7.4 Export storico
 
-1. Tab Storico → "Esporta".
-2. Filtri: piano (obbligatorio), scheda (opzionale), allenamento (opzionale).
-3. Formato: PDF / CSV / Entrambi.
-4. Condivisione via intent Android (WhatsApp, Drive, email, ecc.).
+1. Tab Storico → pulsante **"CSV"** nella barra superiore.
+2. Filtro piano opzionale (chip orizzontali); senza filtro esporta tutto lo storico.
+3. Formato: **CSV**, condiviso via intent Android (WhatsApp, Drive, email, ecc.).
 
 ---
 
@@ -360,8 +443,8 @@ Tab Allenamento
 
 ## 9. Considerazioni future (fuori scope v1)
 
-- Raggruppamento esercizi per gruppo muscolare.
 - Grafici di progressione per singolo esercizio.
+- Export storico in formato PDF.
 - Tema chiaro/scuro.
 - Supporto iOS.
 - Sincronizzazione cloud / backup.

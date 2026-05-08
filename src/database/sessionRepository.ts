@@ -94,6 +94,68 @@ export function getCompletedSessionsForPlan(planId: number): SessionRow[] {
   `, [planId]);
 }
 
+// ─── Bulk save ────────────────────────────────────────────────────────────────
+
+interface ExerciseSaveData {
+  cardExerciseId: number;
+  exerciseId:     number;
+  sets:           number;
+  reps:           number;
+  exerciseType:   'reps' | 'time' | 'bodyweight';
+  duration:       number | null;
+  groupId:        number | null;
+  groupRounds:    number | null;
+}
+
+interface ExerciseProgressData {
+  weights:    string[];
+  isDone:     boolean;
+  currentSet: number;
+}
+
+/**
+ * Creates the session row, inserts all completed sets, and returns the new sessionId.
+ * Called once at the very end of the workout (replaces createSession + per-set saveSet + finalizeSession).
+ */
+export function bulkSaveAndFinalize(
+  planId:        number,
+  cardId:        number,
+  startedAt:     string,
+  durationS:     number,
+  exercises:     ExerciseSaveData[],
+  progressItems: ExerciseProgressData[]
+): number {
+  const db = getDB();
+
+  const result = db.runSync(
+    'INSERT INTO workout_sessions (plan_id, card_id, started_at, ended_at, duration_s) VALUES (?, ?, ?, ?, ?)',
+    [planId, cardId, startedAt, new Date().toISOString(), durationS]
+  );
+  const sessionId = Number(result.lastInsertRowId);
+
+  exercises.forEach((ex, idx) => {
+    const prog = progressItems[idx];
+    if (!prog?.isDone) return;
+    const nSets = ex.groupId != null ? (ex.groupRounds ?? 1) : ex.sets;
+    for (let s = 0; s < nSets; s++) {
+      const weightStr = prog.weights[s] ?? '';
+      const w = weightStr ? parseFloat(weightStr) : null;
+      const isTime = ex.exerciseType === 'time';
+      saveSet(
+        sessionId,
+        ex.cardExerciseId,
+        ex.exerciseId,
+        s + 1,
+        isTime ? (ex.duration ?? 0) : ex.reps,
+        isTime ? null : (isNaN(w as number) ? null : w),
+        ex.exerciseType
+      );
+    }
+  });
+
+  return sessionId;
+}
+
 export function saveSet(
   sessionId: number,
   cardExerciseId: number,

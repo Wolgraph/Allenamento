@@ -13,7 +13,8 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { getTimerFeedbackSync } from '../../utils/settings';
 import { getExercisesForCard, getLastWeightForExercise } from '../../database/cardExerciseRepository';
 import { getCard } from '../../database/cardRepository';
-import { createSession, finalizeSession, deleteSession, saveSet } from '../../database/sessionRepository';
+import { bulkSaveAndFinalize } from '../../database/sessionRepository';
+import { createDraft, updateDraftProgress, readDraft, deleteDraft, effectiveSets } from '../../utils/sessionDraft';
 import type { CardExerciseWithName, WorkoutCard } from '../../types';
 import type { WorkoutStackParamList } from '../../navigation/types';
 
@@ -22,7 +23,7 @@ type RouteProps = RouteProp<WorkoutStackParamList, 'AllenamentoAttivo'>;
 
 interface ExerciseProgress {
   currentSet: number;
-  weight:     string;
+  weights:    string[];   // one slot per set/round, indexed by (setNumber - 1)
   completed:  boolean;
 }
 
@@ -114,7 +115,7 @@ export default function AllenamentoAttivoScreen() {
   const [timedLeft,  setTimedLeft]  = useState(0);
 
   // Refs mirror state for interval callback
-  const sessionIdRef       = useRef<number | null>(null);
+  const draftStartedAtRef  = useRef<string>(new Date().toISOString());
   const notifIdRef         = useRef<string | null>(null);
   const isRestingRef       = useRef(false);
   const restLeftRef        = useRef(0);
@@ -137,12 +138,46 @@ export default function AllenamentoAttivoScreen() {
     const exs = getExercisesForCard(cardId);
     setExercises(exs);
     exercisesRef.current = exs;
-    setProgress(exs.map((ex) => {
-      const w = ex.exercise_type === 'reps'
-        ? getLastWeightForExercise(ex.exercise_id, ex.reps)
-        : null;
-      return { currentSet: 1, weight: w != null ? String(w) : '', completed: false };
-    }));
+
+    const freshProgress = (): ExerciseProgress[] =>
+      exs.map((ex) => {
+        const nSets = effectiveSets(ex);
+        const w = ex.exercise_type === 'reps'
+          ? getLastWeightForExercise(ex.exercise_id, ex.reps)
+          : null;
+        const ws = w != null ? String(w) : '';
+        return { currentSet: 1, weights: Array(nSets).fill(ws), completed: false };
+      });
+
+    readDraft().then(draft => {
+      if (draft && draft.cardId === cardId && draft.planId === planId) {
+        // Recover interrupted workout
+        draftStartedAtRef.current = draft.startedAt;
+        setProgress(exs.map((_, i) => {
+          const saved = draft.progress.exercises[i];
+          const nSets = effectiveSets(exs[i]);
+          return {
+            currentSet: saved?.currentSet ?? 1,
+            weights:    saved?.weights ?? Array(nSets).fill(''),
+            completed:  saved?.isDone ?? false,
+          };
+        }));
+        setElapsed(draft.progress.elapsedS);
+        const restoredActiveIdx = draft.progress.activeIdx;
+        setActiveIdx(restoredActiveIdx);
+        activeIdxRef.current = restoredActiveIdx;
+        const gr: Record<number, number> = {};
+        Object.entries(draft.progress.groupRound).forEach(([k, v]) => {
+          gr[Number(k)] = v;
+        });
+        groupRoundRef.current = gr;
+        setGroupRound(gr);
+        startedRef.current = true;
+        setStarted(true);
+      } else {
+        setProgress(freshProgress());
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -241,29 +276,63 @@ export default function AllenamentoAttivoScreen() {
   const confirmAbandon = () => setAbandonDialog(true);
 
   const handleAvvia = () => {
-    sessionIdRef.current = createSession(planId, cardId);
-    startedRef.current   = true;
+    const startedAt = new Date().toISOString();
+    draftStartedAtRef.current = startedAt;
+    createDraft(planId, cardId, cardName, startedAt, exercisesRef.current,
+      progress.map(p => p.weights)).catch(() => {});
+    startedRef.current = true;
     setStarted(true);
   };
 
-  const updateWeight = (idx: number, value: string) => {
+  const updateWeight = (idx: number, setIdx: number, value: string) => {
     setProgress((prev) => {
       const next = [...prev];
-      next[idx] = { ...next[idx], weight: value };
+      const weights = [...next[idx].weights];
+      weights[setIdx] = value;
+      next[idx] = { ...next[idx], weights };
       return next;
     });
   };
 
-  // Persist a set to the session log
-  const persistSet = (exerciseIdx: number, setNumber: number, weightStr: string) => {
-    const ex = exercisesRef.current[exerciseIdx];
-    if (!sessionIdRef.current || !ex) return;
-    if (ex.exercise_type === 'time') {
-      saveSet(sessionIdRef.current, ex.id, ex.exercise_id, setNumber, ex.duration ?? 0, null, 'time');
-    } else {
-      const w = weightStr ? parseFloat(weightStr) : null;
-      saveSet(sessionIdRef.current, ex.id, ex.exercise_id, setNumber, ex.reps, isNaN(w as number) ? null : w, 'reps');
-    }
+  // Fire-and-forget: persiste lo stato corrente nel draft JSON
+  const saveDraftProgress = (prog: ExerciseProgress[], currentElapsed: number) => {
+    updateDraftProgress({
+      elapsedS:   currentElapsed,
+      activeIdx:  activeIdxRef.current,
+      groupRound: groupRoundRef.current as Record<string, number>,
+      exercises:  prog.map(p => ({
+        weights:    p.weights,
+        isDone:     p.completed,
+        currentSet: p.currentSet,
+      })),
+    });
+  };
+
+  // Bulk-save nel DB, cancella il draft (await), poi naviga al riepilogo
+  const finishWorkout = async (finalProgress: ExerciseProgress[], durationS: number) => {
+    const sessionId = bulkSaveAndFinalize(
+      planId,
+      cardId,
+      draftStartedAtRef.current,
+      durationS,
+      exercisesRef.current.map(ex => ({
+        cardExerciseId: ex.id,
+        exerciseId:     ex.exercise_id,
+        sets:           ex.sets,
+        reps:           ex.reps,
+        exerciseType:   ex.exercise_type,
+        duration:       ex.duration,
+        groupId:        ex.group_id,
+        groupRounds:    ex.group_rounds,
+      })),
+      finalProgress.map(p => ({
+        weights:    p.weights,
+        isDone:     p.completed,
+        currentSet: p.currentSet,
+      }))
+    );
+    await deleteDraft();
+    navigation.replace('Riepilogo', { sessionId, durationS });
   };
 
   const startRest = async (restTime: number) => {
@@ -286,28 +355,20 @@ export default function AllenamentoAttivoScreen() {
     Vibration.vibrate(100);
   };
 
-  // Mark all exercises in a group as completed
-  const markGroupCompleted = (groupId: number) => {
-    setProgress((prev) => {
-      const next = [...prev];
-      exercisesRef.current.forEach((ex, i) => {
-        if (ex.group_id === groupId) next[i] = { ...next[i], completed: true };
-      });
-      return next;
-    });
-  };
-
   // Advance past the last exercise of a group (or the whole workout)
   const advancePastGroup = (gi: GroupInfo) => {
-    markGroupCompleted(gi.groupId);
+    const newProgress = progress.map((p, i) => {
+      const ex = exercisesRef.current[i];
+      return ex?.group_id === gi.groupId ? { ...p, completed: true } : p;
+    });
+    setProgress(newProgress);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     if (gi.lastIdx >= exercisesRef.current.length - 1) {
       finishedRef.current = true;
-      const durationS = elapsed + 1;
-      if (sessionIdRef.current) finalizeSession(sessionIdRef.current, durationS);
-      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS });
+      finishWorkout(newProgress, elapsed + 1);
     } else {
+      saveDraftProgress(newProgress, elapsed);
       setActiveIdx(gi.lastIdx + 1);
     }
   };
@@ -317,12 +378,11 @@ export default function AllenamentoAttivoScreen() {
     const idx  = exerciseIdx ?? activeIdx;
     const prog = progress[idx];
     const ex   = exercisesRef.current[idx];
-    persistSet(idx, prog.currentSet, prog.weight);
-    setProgress((prev) => {
-      const next = [...prev];
-      next[idx] = { ...next[idx], currentSet: prog.currentSet + 1 };
-      return next;
-    });
+    const newProgress = progress.map((p, i) =>
+      i === idx ? { ...p, currentSet: prog.currentSet + 1 } : p
+    );
+    setProgress(newProgress);
+    saveDraftProgress(newProgress, elapsed);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     await startRest(ex.rest_time);
@@ -330,21 +390,17 @@ export default function AllenamentoAttivoScreen() {
 
   const handleProssimo = (exerciseIdx?: number) => {
     const idx  = exerciseIdx ?? activeIdx;
-    const prog = progress[idx];
-    persistSet(idx, prog.currentSet, prog.weight);
-    setProgress((prev) => {
-      const next = [...prev];
-      next[idx] = { ...next[idx], completed: true };
-      return next;
-    });
+    const newProgress = progress.map((p, i) =>
+      i === idx ? { ...p, completed: true } : p
+    );
+    setProgress(newProgress);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     if (idx >= exercisesRef.current.length - 1) {
       finishedRef.current = true;
-      const durationS = elapsed + 1;
-      if (sessionIdRef.current) finalizeSession(sessionIdRef.current, durationS);
-      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS });
+      finishWorkout(newProgress, elapsed + 1);
     } else {
+      saveDraftProgress(newProgress, elapsed);
       setActiveIdx(idx + 1);
     }
   };
@@ -352,9 +408,8 @@ export default function AllenamentoAttivoScreen() {
   // ── Group exercise actions ──────────────────────────────────────────────────
 
   // SUPERSET — no rest between exercises within a round
-  const handleSuperset_continue = (idx: number, gi: GroupInfo) => {
-    const round = groupRoundRef.current[gi.groupId] ?? 1;
-    persistSet(idx, round, progress[idx]?.weight ?? '');
+  const handleSuperset_continue = (idx: number, _gi: GroupInfo) => {
+    saveDraftProgress(progress, elapsed);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     setActiveIdx(idx + 1);
@@ -362,11 +417,10 @@ export default function AllenamentoAttivoScreen() {
 
   const handleSuperset_endRound = async (idx: number, gi: GroupInfo) => {
     const round = groupRoundRef.current[gi.groupId] ?? 1;
-    persistSet(idx, round, progress[idx]?.weight ?? '');
+    saveDraftProgress(progress, elapsed);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     if (round < gi.rounds) {
-      // Rest → cycle back to start, increment round
       const nextRound = round + 1;
       postRestIdxRef.current   = gi.firstIdx;
       postRestGroupRef.current = { groupId: gi.groupId, round: nextRound };
@@ -378,18 +432,16 @@ export default function AllenamentoAttivoScreen() {
 
   // CIRCUIT — per-exercise rest between exercises within a round
   const handleCircuit_restNext = async (idx: number, gi: GroupInfo) => {
-    const round = groupRoundRef.current[gi.groupId] ?? 1;
-    persistSet(idx, round, progress[idx]?.weight ?? '');
+    saveDraftProgress(progress, elapsed);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
-    // Rest ex.rest_time → go to next exercise in group
     postRestIdxRef.current = idx + 1;
     await startRest(gi.exRestTime);
   };
 
   const handleCircuit_endRound = async (idx: number, gi: GroupInfo) => {
     const round = groupRoundRef.current[gi.groupId] ?? 1;
-    persistSet(idx, round, progress[idx]?.weight ?? '');
+    saveDraftProgress(progress, elapsed);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     if (round < gi.rounds) {
@@ -404,26 +456,15 @@ export default function AllenamentoAttivoScreen() {
 
   // SIMPLE GROUP — 1 round, per-exercise rest between exercises, no rest after last
   const handleSimple_continue = async (idx: number, gi: GroupInfo) => {
-    persistSet(idx, 1, progress[idx]?.weight ?? '');
+    saveDraftProgress(progress, elapsed);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     postRestIdxRef.current = idx + 1;
     await startRest(gi.exRestTime);
   };
 
-  const handleSimple_last = (idx: number, gi: GroupInfo) => {
-    persistSet(idx, 1, progress[idx]?.weight ?? '');
-    markGroupCompleted(gi.groupId);
-    timedPhaseRef.current = 'idle';
-    setTimedPhase('idle');
-    if (gi.lastIdx >= exercisesRef.current.length - 1) {
-      finishedRef.current = true;
-      const durationS = elapsed + 1;
-      if (sessionIdRef.current) finalizeSession(sessionIdRef.current, durationS);
-      navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS });
-    } else {
-      setActiveIdx(gi.lastIdx + 1);
-    }
+  const handleSimple_last = (_idx: number, gi: GroupInfo) => {
+    advancePastGroup(gi);
   };
 
   const handleTimedAction = async () => {
@@ -795,8 +836,8 @@ export default function AllenamentoAttivoScreen() {
                                   <Text style={styles.weightLabel}>Peso (kg)</Text>
                                   <TextInput
                                     style={styles.weightInput}
-                                    value={gProg.weight}
-                                    onChangeText={(v) => updateWeight(i, v)}
+                                    value={gProg.weights[curGrpRound - 1] ?? ''}
+                                    onChangeText={(v) => updateWeight(i, curGrpRound - 1, v)}
                                     placeholder="—"
                                     placeholderTextColor={COLORS.textMuted}
                                     keyboardType="decimal-pad"
@@ -906,8 +947,8 @@ export default function AllenamentoAttivoScreen() {
                             <Text style={styles.weightLabel}>Peso (kg)</Text>
                             <TextInput
                               style={styles.weightInput}
-                              value={prog.weight}
-                              onChangeText={(v) => updateWeight(idx, v)}
+                              value={prog.weights[prog.currentSet - 1] ?? ''}
+                              onChangeText={(v) => updateWeight(idx, prog.currentSet - 1, v)}
                               placeholder="—"
                               placeholderTextColor={COLORS.textMuted}
                               keyboardType="decimal-pad"
@@ -1009,7 +1050,7 @@ export default function AllenamentoAttivoScreen() {
         onCancel={() => setAbandonDialog(false)}
         onConfirm={() => {
           setAbandonDialog(false);
-          if (sessionIdRef.current) deleteSession(sessionIdRef.current);
+          deleteDraft().catch(() => {});
           navigation.goBack();
         }}
       />
