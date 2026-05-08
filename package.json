@@ -30,8 +30,10 @@
     "react-native-screens": "~4.16.0"
   },
   "devDependencies": {
+    "@types/cypress": "^0.1.6",
     "@types/react": "~19.1.0",
     "babel-preset-expo": "^55.0.19",
+    "cypress": "^15.14.2",
     "typescript": "~5.9.2"
   },
   "private": true

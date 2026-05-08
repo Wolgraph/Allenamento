@@ -20,6 +20,12 @@ export function deleteSession(id: number): void {
   getDB().runSync('DELETE FROM workout_sessions WHERE id = ?', [id]);
 }
 
+export function deleteSessionWithSets(id: number): void {
+  const db = getDB();
+  db.runSync('DELETE FROM session_sets WHERE session_id = ?', [id]);
+  db.runSync('DELETE FROM workout_sessions WHERE id = ?', [id]);
+}
+
 export function getSession(id: number): WorkoutSession | null {
   return getDB().getFirstSync<WorkoutSession>(
     'SELECT * FROM workout_sessions WHERE id = ?',

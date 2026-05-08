@@ -187,7 +187,7 @@ function GroupModal({ state, onChange, onConfirm, onCancel }: GroupModalProps) {
               <View style={[ms.stepperRow, { marginTop: 6 }]}>
                 <TouchableOpacity
                   style={ms.stepperBtn}
-                  onPress={() => onChange({ restTime: Math.max(15, state.restTime - 15) })}
+                  onPress={() => onChange({ restTime: Math.max(0, state.restTime - 15) })}
                 >
                   <FontAwesome5 name="minus" size={12} color={COLORS.text} solid />
                 </TouchableOpacity>

@@ -13,7 +13,7 @@ export type PianiStackParamList = {
 export type WorkoutStackParamList = {
   SceltaScheda:      undefined;
   AllenamentoAttivo: { cardId: number; planId: number; cardName: string };
-  Riepilogo:         { sessionId: number; durationS: number };
+  Riepilogo:         { sessionId: number; durationS: number; bufferedSets?: Array<{ exerciseName: string; cardExerciseId: number; exerciseId: number; setNumber: number; reps: number; weight: number | null; exerciseType: 'reps' | 'time'; skipped?: boolean; }> };
 };
 
 export type RootTabParamList = {

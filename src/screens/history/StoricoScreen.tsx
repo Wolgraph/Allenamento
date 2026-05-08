@@ -10,7 +10,7 @@ import { FontAwesome5 } from '@expo/vector-icons';
 import { COLORS } from '../../theme/colors';
 import {
   getCompletedSessions, getCompletedSessionsForPlan,
-  getSessionSets,
+  getSessionSets, deleteSessionWithSets,
   type SessionRow, type SessionSetRow,
 } from '../../database/sessionRepository';
 import { getActivePlans, getArchivedPlans } from '../../database/planRepository';
@@ -108,6 +108,25 @@ export default function StoricoScreen() {
     }));
   };
 
+  const handleDelete = (item: SessionWithSets) => {
+    const parts = [item.card_name, item.plan_name].filter(Boolean).join('  ·  ');
+    Alert.alert(
+      'Elimina allenamento',
+      `Eliminare ${parts ? `"${parts}"` : 'questo allenamento'}?\nI dati non potranno essere recuperati.`,
+      [
+        { text: 'Annulla', style: 'cancel' },
+        {
+          text: 'Elimina',
+          style: 'destructive',
+          onPress: () => {
+            deleteSessionWithSets(item.id);
+            setSessions(prev => prev.filter(s => s.id !== item.id));
+          },
+        },
+      ]
+    );
+  };
+
   const handleExport = async () => {
     const raw = filterPlanId != null
       ? getCompletedSessionsForPlan(filterPlanId)
@@ -159,6 +178,13 @@ export default function StoricoScreen() {
               <FontAwesome5 name="layer-group" size={10} color={COLORS.success} solid />
               <Text style={[styles.statBadgeText, { color: COLORS.success }]}>{item.set_count}</Text>
             </View>
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => handleDelete(item)}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <FontAwesome5 name="trash-alt" size={13} color={COLORS.danger} solid />
+            </TouchableOpacity>
             <FontAwesome5
               name={item.expanded ? 'chevron-up' : 'chevron-down'}
               size={12} color={COLORS.textMuted} solid
@@ -340,6 +366,11 @@ const styles = StyleSheet.create({
   cardPlan:   { color: COLORS.textSub, fontSize: 12 },
 
   cardStats: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  deleteBtn: {
+    width: 28, height: 28, borderRadius: 8,
+    backgroundColor: COLORS.danger + '12',
+    alignItems: 'center', justifyContent: 'center',
+  },
   statBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: COLORS.primary + '18',

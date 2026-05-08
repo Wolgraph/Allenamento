@@ -1,13 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
+  View, Text, TextInput, ScrollView, TouchableOpacity, StyleSheet,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { FontAwesome5 } from '@expo/vector-icons';
 
 import { COLORS } from '../../theme/colors';
-import { getSessionSets, type SessionSetRow } from '../../database/sessionRepository';
+import {
+  getSessionSets,
+  saveSet,
+  finalizeSession,
+  type SessionSetRow,
+} from '../../database/sessionRepository';
 import type { WorkoutStackParamList } from '../../navigation/types';
 
 type NavProp    = NativeStackNavigationProp<WorkoutStackParamList, 'Riepilogo'>;
@@ -22,34 +27,196 @@ function formatDuration(seconds: number): string {
   return `${s}s`;
 }
 
-interface ExerciseSummary { name: string; sets: SessionSetRow[] }
+interface EditableSet {
+  exerciseId?:   number;
+  setNumber:     number;
+  reps:          number;
+  weight:        number | null;
+  exerciseType:  'reps' | 'time';
+}
+
+interface ExerciseSummary {
+  name:          string;
+  cardExerciseId: number;
+  exerciseId?:   number;
+  sets:          EditableSet[];
+}
 
 export default function RiepilogoScreen() {
   const navigation = useNavigation<NavProp>();
   const route      = useRoute<RouteProps>();
-  const { sessionId, durationS } = route.params;
+  const { sessionId, durationS, bufferedSets } = route.params;
 
   const [exercises, setExercises] = useState<ExerciseSummary[]>([]);
+  const [isSaving, setIsSaving]   = useState(false);
 
   useEffect(() => {
-    const sets = getSessionSets(sessionId);
-    const map  = new Map<string, SessionSetRow[]>();
-    for (const set of sets) {
-      const key = `${set.card_exercise_id}`;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(set);
+    if (bufferedSets && bufferedSets.length > 0) {
+      const filteredSets = bufferedSets.filter(set => !set.skipped);
+      const map = new Map<number, ExerciseSummary>();
+      for (const set of filteredSets) {
+        if (!map.has(set.cardExerciseId)) {
+          map.set(set.cardExerciseId, {
+            name: set.exerciseName,
+            cardExerciseId: set.cardExerciseId,
+            exerciseId: set.exerciseId,
+            sets: [],
+          });
+        }
+        map.get(set.cardExerciseId)!.sets.push({
+          exerciseId: set.exerciseId,
+          setNumber: set.setNumber,
+          reps: set.reps,
+          weight: set.weight,
+          exerciseType: set.exerciseType,
+        });
+      }
+      const grouped = Array.from(map.values()).map((item) => ({
+        ...item,
+        sets: item.sets.sort((a, b) => a.setNumber - b.setNumber),
+      }));
+      setExercises(grouped);
+      return;
     }
-    const grouped: ExerciseSummary[] = [];
-    map.forEach((s) => grouped.push({ name: s[0].exercise_name, sets: s }));
-    setExercises(grouped);
-  }, [sessionId]);
 
-  const totalSets   = exercises.reduce((acc, ex) => acc + ex.sets.length, 0);
-  const totalVolume = exercises.reduce((acc, ex) =>
-    acc + ex.sets.reduce((a, s) =>
-      s.exercise_type === 'time' ? a : a + (s.weight ?? 0) * s.reps, 0
-    ), 0
+    const sets = getSessionSets(sessionId);
+    const map  = new Map<number, ExerciseSummary>();
+    for (const set of sets) {
+      if (!map.has(set.card_exercise_id)) {
+        map.set(set.card_exercise_id, {
+          name: set.exercise_name,
+          cardExerciseId: set.card_exercise_id,
+          sets: [],
+        });
+      }
+      map.get(set.card_exercise_id)!.sets.push({
+        setNumber: set.set_number,
+        reps: set.reps,
+        weight: set.weight,
+        exerciseType: set.exercise_type,
+      });
+    }
+    setExercises(Array.from(map.values()));
+  }, [sessionId, bufferedSets]);
+
+  const totalSets = useMemo(
+    () => exercises.reduce((acc, ex) => acc + ex.sets.length, 0),
+    [exercises],
   );
+
+  const totalVolume = useMemo(
+    () => exercises.reduce((acc, ex) =>
+      acc + ex.sets.reduce((a, s) =>
+        s.exerciseType === 'time' ? a : a + (s.weight ?? 0) * s.reps, 0
+      ), 0),
+    [exercises],
+  );
+
+  const updateSetField = (
+    exerciseIndex: number,
+    setIndex: number,
+    field: 'reps' | 'weight',
+    value: string,
+  ) => {
+    setExercises((prev) => {
+      const next = [...prev];
+      const setItem = { ...next[exerciseIndex].sets[setIndex] };
+      if (field === 'reps') {
+        const parsed = parseInt(value, 10);
+        setItem.reps = Number.isNaN(parsed) ? 0 : parsed;
+      } else {
+        const parsed = parseFloat(value.replace(',', '.'));
+        setItem.weight = Number.isNaN(parsed) ? null : parsed;
+      }
+      next[exerciseIndex].sets[setIndex] = setItem;
+      return next;
+    });
+  };
+
+  const addSet = (exerciseIndex: number) => {
+    setExercises((prev) => {
+      const next = [...prev];
+      const exercise = next[exerciseIndex];
+      const last = exercise.sets[exercise.sets.length - 1];
+      exercise.sets = [
+        ...exercise.sets,
+        {
+          exerciseId: exercise.exerciseId,
+          setNumber: exercise.sets.length + 1,
+          reps: last?.reps ?? 0,
+          weight: null,
+          exerciseType: last?.exerciseType ?? 'reps',
+        },
+      ];
+      return next;
+    });
+  };
+
+  const removeSet = (exerciseIndex: number) => {
+    setExercises((prev) => {
+      const next = [...prev];
+      const exercise = next[exerciseIndex];
+      if (exercise.sets.length <= 1) return next;
+      exercise.sets = exercise.sets.slice(0, -1).map((set, index) => ({
+        ...set,
+        setNumber: index + 1,
+      }));
+      return next;
+    });
+  };
+
+  const handleConfirm = () => {
+    if (!bufferedSets || bufferedSets.length === 0) {
+      finalizeSession(sessionId, durationS);
+      navigation.popToTop();
+      return;
+    }
+
+    setIsSaving(true);
+    const filteredSets = bufferedSets.filter(set => !set.skipped);
+    const map = new Map<number, EditableSet[]>();
+    for (const set of filteredSets) {
+      if (!map.has(set.cardExerciseId)) map.set(set.cardExerciseId, []);
+      map.get(set.cardExerciseId)!.push({
+        exerciseId: set.exerciseId,
+        setNumber: set.setNumber,
+        reps: set.reps,
+        weight: set.weight,
+        exerciseType: set.exerciseType,
+      });
+    }
+    for (const exercise of exercises) {
+      const originalSets = map.get(exercise.cardExerciseId) || [];
+      for (const set of exercise.sets) {
+        const original = originalSets.find(s => s.setNumber === set.setNumber);
+        if (original) {
+          if (set.exerciseType === 'time') {
+            saveSet(
+              sessionId,
+              exercise.cardExerciseId,
+              set.exerciseId ?? 0,
+              set.setNumber,
+              set.reps,
+              null,
+              'time',
+            );
+          } else {
+            saveSet(
+              sessionId,
+              exercise.cardExerciseId,
+              set.exerciseId ?? 0,
+              set.setNumber,
+              set.reps,
+              set.weight,
+              'reps',
+            );
+          }
+        }
+      }
+    }
+    finalizeSession(sessionId, durationS);
+    navigation.popToTop();
+  };
 
   return (
     <View style={styles.container}>
@@ -88,27 +255,54 @@ export default function RiepilogoScreen() {
           </View>
         </View>
 
-        {/* Esercizi */}
         {exercises.map((ex, idx) => (
-          <View key={idx} style={styles.exerciseCard}>
+          <View key={ex.cardExerciseId} style={styles.exerciseCard}>
             <View style={styles.accentBar} />
             <View style={styles.exerciseCardContent}>
-              <Text style={styles.exerciseName}>{ex.name}</Text>
-              <View style={styles.setsGrid}>
-                {ex.sets.map((set) => (
-                  <View key={set.set_number} style={styles.setChip}>
-                    <Text style={styles.setChipLabel}>S{set.set_number}</Text>
-                    {set.exercise_type === 'time' ? (
-                      <Text style={[styles.setChipWeight, { color: COLORS.accent }]}>
-                        {set.reps}s
-                      </Text>
+              <View style={styles.exerciseHeader}>
+                <Text style={styles.exerciseName}>{ex.name}</Text>
+                {bufferedSets ? (
+                  <View style={styles.exerciseSetControls}>
+                    <TouchableOpacity style={styles.setControlBtn} onPress={() => removeSet(idx)} activeOpacity={0.75}>
+                      <Text style={styles.setControlText}>-</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.setControlCount}>{ex.sets.length}</Text>
+                    <TouchableOpacity style={styles.setControlBtn} onPress={() => addSet(idx)} activeOpacity={0.75}>
+                      <Text style={styles.setControlText}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
+              <View style={styles.setsList}>
+                {ex.sets.map((set, setIdx) => (
+                  <View key={setIdx} style={styles.setRow}>
+                    <Text style={styles.setRowLabel}>S{set.setNumber}</Text>
+                    <View style={styles.setField}>
+                      <Text style={styles.setFieldLabel}>Rip.</Text>
+                      <TextInput
+                        style={styles.setInput}
+                        value={String(set.reps)}
+                        keyboardType="number-pad"
+                        onChangeText={(value) => updateSetField(idx, setIdx, 'reps', value)}
+                      />
+                    </View>
+                    {set.exerciseType === 'time' ? (
+                      <View style={styles.setField}>
+                        <Text style={styles.setFieldLabel}>Durata</Text>
+                        <Text style={styles.setText}>{set.reps}s</Text>
+                      </View>
                     ) : (
-                      <Text style={styles.setChipWeight}>
-                        {set.weight != null ? `${set.weight} kg` : '—'}
-                      </Text>
-                    )}
-                    {set.exercise_type !== 'time' && (
-                      <Text style={styles.setChipReps}>{set.reps} reps</Text>
+                      <View style={styles.setField}>
+                        <Text style={styles.setFieldLabel}>Peso</Text>
+                        <TextInput
+                          style={styles.setInput}
+                          value={set.weight != null ? String(set.weight) : ''}
+                          keyboardType="decimal-pad"
+                          onChangeText={(value) => updateSetField(idx, setIdx, 'weight', value)}
+                          placeholder="—"
+                          placeholderTextColor={COLORS.textMuted}
+                        />
+                      </View>
                     )}
                   </View>
                 ))}
@@ -116,16 +310,16 @@ export default function RiepilogoScreen() {
             </View>
           </View>
         ))}
-
       </ScrollView>
 
       <TouchableOpacity
-        style={styles.closeBtn}
-        onPress={() => navigation.popToTop()}
+        style={[styles.closeBtn, bufferedSets ? styles.confirmBtn : null]}
+        onPress={handleConfirm}
         activeOpacity={0.85}
+        disabled={isSaving}
       >
-        <FontAwesome5 name="check" size={15} color={COLORS.text} solid />
-        <Text style={styles.closeBtnText}>Chiudi</Text>
+        <FontAwesome5 name={bufferedSets ? 'check' : 'check'} size={15} color={COLORS.text} solid />
+        <Text style={styles.closeBtnText}>{bufferedSets ? 'Conferma allenamento' : 'Chiudi'}</Text>
       </TouchableOpacity>
     </View>
   );
@@ -182,19 +376,35 @@ const styles = StyleSheet.create({
     width: 4, backgroundColor: COLORS.primary,
   },
   exerciseCardContent: { paddingLeft: 20, paddingRight: 14, paddingVertical: 14 },
-  exerciseName: {
-    color: COLORS.text, fontSize: 15, fontWeight: '700', marginBottom: 12,
+  exerciseHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12,
   },
-  setsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  setChip: {
+  exerciseName: { color: COLORS.text, fontSize: 15, fontWeight: '700', flex: 1, marginRight: 10 },
+  exerciseSetControls: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  setControlBtn: {
+    width: 32, height: 32, borderRadius: 10,
     backgroundColor: COLORS.surfaceAlt,
-    borderRadius: 10,
-    paddingHorizontal: 12, paddingVertical: 8,
-    alignItems: 'center', minWidth: 72,
+    alignItems: 'center', justifyContent: 'center',
   },
-  setChipLabel:  { color: COLORS.textMuted, fontSize: 10, fontWeight: '700', marginBottom: 3 },
-  setChipWeight: { color: COLORS.text, fontSize: 16, fontWeight: '700' },
-  setChipReps:   { color: COLORS.textSub, fontSize: 10, marginTop: 2 },
+  setControlText: { color: COLORS.text, fontSize: 18, fontWeight: '700' },
+  setControlCount: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
+  setsList: { gap: 10 },
+  setRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: COLORS.surfaceAlt,
+    borderRadius: 12, padding: 12,
+  },
+  setRowLabel: { width: 28, color: COLORS.text, fontWeight: '700' },
+  setField: { flex: 1 },
+  setFieldLabel: { color: COLORS.textMuted, fontSize: 11, marginBottom: 4 },
+  setInput: {
+    backgroundColor: COLORS.bg,
+    color: COLORS.text,
+    borderRadius: 10, borderWidth: 1, borderColor: COLORS.border,
+    paddingHorizontal: 10, paddingVertical: 8,
+    fontSize: 14,
+  },
+  setText: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
 
   closeBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
@@ -203,6 +413,10 @@ const styles = StyleSheet.create({
     gap: 8,
     borderWidth: 1, borderColor: COLORS.border,
     elevation: 1,
+  },
+  confirmBtn: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
   },
   closeBtnText: { color: COLORS.text, fontSize: 16, fontWeight: '600' },
 });
