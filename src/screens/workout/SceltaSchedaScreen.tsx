@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import {
   View, Text, TouchableOpacity,
-  StyleSheet, ScrollView, Alert,
+  StyleSheet, ScrollView,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -11,7 +11,6 @@ import { COLORS } from '../../theme/colors';
 import { getActivePlans } from '../../database/planRepository';
 import { getCardsForPlan } from '../../database/cardRepository';
 import { getLastCardForPlan } from '../../database/sessionRepository';
-import { readDraft, deleteDraft } from '../../utils/sessionDraft';
 import type { TrainingPlan, WorkoutCard } from '../../types';
 import type { WorkoutStackParamList } from '../../navigation/types';
 
@@ -27,32 +26,6 @@ export default function SceltaSchedaScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      // Check for an interrupted workout draft
-      readDraft().then(draft => {
-        if (!draft) return;
-        Alert.alert(
-          'Allenamento interrotto',
-          `Trovato un allenamento non completato: "${draft.cardName}".\nVuoi riprendere?`,
-          [
-            {
-              text: 'Annulla',
-              style: 'destructive',
-              onPress: () => deleteDraft().catch(() => {}),
-            },
-            {
-              text: 'Riprendi',
-              style: 'default',
-              onPress: () => navigation.navigate('AllenamentoAttivo', {
-                cardId:   draft.cardId,
-                planId:   draft.planId,
-                cardName: draft.cardName,
-              }),
-            },
-          ],
-          { cancelable: false }
-        );
-      });
-
       const activePlans = getActivePlans();
       setPlans(activePlans);
       setSelectedPlan(null);

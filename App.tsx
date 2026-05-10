@@ -26,6 +26,7 @@ import { seedExercisesIfEmpty } from './src/database/exerciseRepository';
 import AppNavigator from './src/navigation/AppNavigator';
 import { COLORS } from './src/theme/colors';
 import { loadTimerFeedback, getTimerFeedbackSync } from './src/utils/settings';
+import { readDraft, deleteDraft } from './src/utils/sessionDraft';
 
 const navigationRef = createNavigationContainerRef();
 
@@ -90,6 +91,36 @@ export default function App() {
       processWorkoutUrl(url);
     }
   }, [ready, navReady, processWorkoutUrl]);
+
+  // Controlla draft sessione interrotta al boot, indipendentemente dalla tab attiva
+  useEffect(() => {
+    if (!ready || !navReady) return;
+    readDraft().then(draft => {
+      if (!draft) return;
+      Alert.alert(
+        'Allenamento interrotto',
+        `Trovato un allenamento non completato: "${draft.cardName}".\nVuoi riprendere?`,
+        [
+          {
+            text: 'Annulla',
+            style: 'destructive',
+            onPress: () => deleteDraft().catch(() => {}),
+          },
+          {
+            text: 'Riprendi',
+            style: 'default',
+            onPress: () => navigationRef.dispatch(
+              CommonActions.navigate('Allenamento', {
+                screen: 'AllenamentoAttivo',
+                params: { cardId: draft.cardId, planId: draft.planId, cardName: draft.cardName },
+              })
+            ),
+          },
+        ],
+        { cancelable: false }
+      );
+    });
+  }, [ready, navReady]);
 
   useEffect(() => {
     (async () => {

@@ -1,10 +1,10 @@
 import { getDB } from './db';
 import type { WorkoutSession } from '../types';
 
-export function createSession(planId: number, cardId: number): number {
+export function createSession(planId: number, cardId: number, startedAt?: string): number {
   const result = getDB().runSync(
     'INSERT INTO workout_sessions (plan_id, card_id, started_at) VALUES (?, ?, ?)',
-    [planId, cardId, new Date().toISOString()]
+    [planId, cardId, startedAt ?? new Date().toISOString()]
   );
   return result.lastInsertRowId;
 }

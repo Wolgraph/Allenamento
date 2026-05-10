@@ -13,6 +13,7 @@ import {
   finalizeSession,
   type SessionSetRow,
 } from '../../database/sessionRepository';
+import { deleteDraft } from '../../utils/sessionDraft';
 import type { WorkoutStackParamList } from '../../navigation/types';
 
 type NavProp    = NativeStackNavigationProp<WorkoutStackParamList, 'Riepilogo'>;
@@ -165,9 +166,10 @@ export default function RiepilogoScreen() {
     });
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (!bufferedSets || bufferedSets.length === 0) {
       finalizeSession(sessionId, durationS);
+      await deleteDraft();
       navigation.popToTop();
       return;
     }
@@ -215,6 +217,7 @@ export default function RiepilogoScreen() {
       }
     }
     finalizeSession(sessionId, durationS);
+    await deleteDraft();
     navigation.popToTop();
   };
 

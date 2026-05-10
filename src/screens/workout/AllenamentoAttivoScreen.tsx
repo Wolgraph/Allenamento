@@ -12,7 +12,7 @@ import { COLORS } from '../../theme/colors';
 import { getTimerFeedbackSync } from '../../utils/settings';
 import { getExercisesForCard, getLastWeightForExercise } from '../../database/cardExerciseRepository';
 import { getCard } from '../../database/cardRepository';
-import { bulkSaveAndFinalize } from '../../database/sessionRepository';
+import { createSession, deleteSession } from '../../database/sessionRepository';
 import { createDraft, updateDraftProgress, readDraft, deleteDraft, effectiveSets } from '../../utils/sessionDraft';
 import type { CardExerciseWithName, WorkoutCard } from '../../types';
 import type { WorkoutStackParamList } from '../../navigation/types';
@@ -122,6 +122,7 @@ export default function AllenamentoAttivoScreen() {
 
   const [bufferedSets, setBufferedSets] = useState<BufferedSetEntry[]>([]);
   const bufferedSetsRef = useRef<BufferedSetEntry[]>([]);
+  const sessionIdRef    = useRef<number | null>(null);
 
   const progressRef = useRef<ExerciseProgress[]>([]);
 
@@ -197,23 +198,27 @@ export default function AllenamentoAttivoScreen() {
     setExercises(exs);
     exercisesRef.current = exs;
 
-    const freshProgress = (): ExerciseProgress[] =>
-      exs.map((ex) => {
-        const nSets = effectiveSets(ex);
-        const w = ex.exercise_type === 'reps'
-          ? getLastWeightForExercise(ex.exercise_id, ex.reps)
-          : null;
-        const ws = w != null ? String(w) : '';
-        return { currentSet: 1, weights: Array(nSets).fill(ws), completed: false };
-      });
+    // Populate progress synchronously so the component is never interactive with an empty array.
+    const freshProg: ExerciseProgress[] = exs.map((ex) => {
+      const nSets = effectiveSets(ex);
+      const w = ex.exercise_type === 'reps'
+        ? getLastWeightForExercise(ex.exercise_id, ex.reps)
+        : null;
+      const ws = w != null ? String(w) : '';
+      return { currentSet: 1, weights: Array(nSets).fill(ws), completed: false };
+    });
+    setProgress(freshProg);
 
     readDraft().then(draft => {
       if (draft && draft.cardId === cardId && draft.planId === planId) {
-        // Recover interrupted workout
-        draftStartedAtRef.current = draft.startedAt;
-        setProgress(exs.map((_, i) => {
+        // Recover interrupted workout — override fresh progress with saved state.
+        draftStartedAtRef.current   = draft.startedAt;
+        sessionIdRef.current        = createSession(planId, cardId, draft.startedAt);
+        workoutStartTimeRef.current = Date.now() - draft.progress.elapsedS * 1000;
+        totalPausedMsRef.current    = 0;
+        setProgress(exs.map((ex, i) => {
           const saved = draft.progress.exercises[i];
-          const nSets = effectiveSets(exs[i]);
+          const nSets = effectiveSets(ex);
           return {
             currentSet: saved?.currentSet ?? 1,
             weights:    saved?.weights ?? Array(nSets).fill(''),
@@ -232,9 +237,8 @@ export default function AllenamentoAttivoScreen() {
         setGroupRound(gr);
         startedRef.current = true;
         setStarted(true);
-      } else {
-        setProgress(freshProgress());
       }
+      // else: freshProg already set above — nothing to do.
     });
   }, []);
 
@@ -257,11 +261,6 @@ export default function AllenamentoAttivoScreen() {
         setRestLeft(newRestLeft);
 
         if (newRestLeft <= 0) {
-          // Salva il set completato alla fine del recupero
-          const idx = activeIdxRef.current;
-          const prog = progressRef.current[idx];
-          if (prog) commitSetImmediately(idx, prog.currentSet, prog.weight);
-
           restEndTimeRef.current  = null;
           restLeftRef.current     = 0;
           isRestingRef.current    = false;
@@ -313,7 +312,7 @@ export default function AllenamentoAttivoScreen() {
             // Exercise timer done → commit set
             const idx = activeIdxRef.current;
             const prog = progressRef.current[idx];
-            if (prog) commitSetImmediately(idx, prog.currentSet, prog.weight);
+            if (prog) commitSetImmediately(idx, prog.currentSet, prog.weights[prog.currentSet - 1] ?? '');
             timedPhaseRef.current = 'done';
             setTimedPhase('done');
             setTimedLeft(0);
@@ -367,12 +366,14 @@ export default function AllenamentoAttivoScreen() {
     }
   };
 
-  const discardSession = () => {
+  const discardSession = async () => {
+    await deleteDraft();
     if (sessionIdRef.current) deleteSession(sessionIdRef.current);
     navigation.goBack();
   };
 
-  const saveSessionAndExit = () => {
+  const saveSessionAndExit = async () => {
+    await deleteDraft();
     const durationS = elapsed + 1;
     navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
   };
@@ -389,14 +390,18 @@ export default function AllenamentoAttivoScreen() {
     );
   };
 
-  const handleAvvia = () => {
+  const handleAvvia = async () => {
     bufferedSetsRef.current = [];
     setBufferedSets([]);
-    sessionIdRef.current      = createSession(planId, cardId);
+    const startedAt = new Date().toISOString();
+    draftStartedAtRef.current   = startedAt;
+    sessionIdRef.current        = createSession(planId, cardId, startedAt);
     workoutStartTimeRef.current = Date.now();
     totalPausedMsRef.current    = 0;
-    startedRef.current        = true;
+    startedRef.current          = true;
     setStarted(true);
+    const initialWeights = exercisesRef.current.map((_, i) => progress[i]?.weights ?? []);
+    await createDraft(planId, cardId, cardName, startedAt, exercisesRef.current, initialWeights);
   };
 
   const updateWeight = (idx: number, setIdx: number, value: string) => {
@@ -406,6 +411,21 @@ export default function AllenamentoAttivoScreen() {
       weights[setIdx] = value;
       next[idx] = { ...next[idx], weights };
       return next;
+    });
+  };
+
+  const saveDraftProgress = (p: ExerciseProgress[], elapsedS: number) => {
+    const gr: Record<string, number> = {};
+    Object.entries(groupRoundRef.current).forEach(([k, v]) => { gr[k] = v; });
+    updateDraftProgress({
+      elapsedS,
+      activeIdx:  activeIdxRef.current,
+      groupRound: gr,
+      exercises:  p.map(e => ({
+        weights:    e.weights,
+        isDone:     e.completed,
+        currentSet: e.currentSet,
+      })),
     });
   };
 
@@ -440,7 +460,7 @@ export default function AllenamentoAttivoScreen() {
   };
 
   // Advance past the last exercise of a group (or the whole workout)
-  const advancePastGroup = (gi: GroupInfo) => {
+  const advancePastGroup = async (gi: GroupInfo) => {
     const newProgress = progress.map((p, i) => {
       const ex = exercisesRef.current[i];
       return ex?.group_id === gi.groupId ? { ...p, completed: true } : p;
@@ -451,6 +471,7 @@ export default function AllenamentoAttivoScreen() {
     if (gi.lastIdx >= exercisesRef.current.length - 1) {
       finishedRef.current = true;
       const durationS = elapsed + 1;
+      await deleteDraft();
       navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
     } else {
       saveDraftProgress(newProgress, elapsed);
@@ -463,30 +484,35 @@ export default function AllenamentoAttivoScreen() {
     const idx  = exerciseIdx ?? activeIdx;
     const prog = progress[idx];
     const ex   = exercisesRef.current[idx];
+    if (!prog || !ex) return;
+
+    // Commit the set that was just completed, BEFORE incrementing currentSet.
+    commitSetImmediately(idx, prog.currentSet, prog.weights[prog.currentSet - 1] ?? '');
+
     setProgress((prev) => {
       const next = [...prev];
-      next[idx] = { ...next[idx], currentSet: prog.currentSet + 1 };
+      next[idx] = { ...next[idx], currentSet: prev[idx].currentSet + 1 };
       return next;
     });
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
-    await startRest(ex.rest_time);
+    await startRest(ex.rest_time ?? 0);
   };
 
-  const handleProssimo = (exerciseIdx?: number) => {
+  const handleProssimo = async (exerciseIdx?: number) => {
     const idx  = exerciseIdx ?? activeIdx;
     const prog = progress[idx];
-    commitSetImmediately(idx, prog.currentSet, prog.weight);
-    setProgress((prev) => {
-      const next = [...prev];
-      next[idx] = { ...next[idx], completed: true };
-      return next;
-    });
+    commitSetImmediately(idx, prog.currentSet, prog.weights[prog.currentSet - 1] ?? '');
+    const newProgress = progress.map((p, i) =>
+      i === idx ? { ...p, completed: true } : p
+    );
+    setProgress(newProgress);
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     if (idx >= exercisesRef.current.length - 1) {
       finishedRef.current = true;
       const durationS = elapsed + 1;
+      await deleteDraft();
       navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
     } else {
       saveDraftProgress(newProgress, elapsed);
@@ -499,7 +525,7 @@ export default function AllenamentoAttivoScreen() {
   // SUPERSET — no rest between exercises within a round
   const handleSuperset_continue = (idx: number, gi: GroupInfo) => {
     const round = groupRoundRef.current[gi.groupId] ?? 1;
-    commitSetImmediately(idx, round, progress[idx]?.weight ?? '');
+    commitSetImmediately(idx, round, progress[idx]?.weights[round - 1] ?? '');
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
     setActiveIdx(idx + 1);
@@ -569,11 +595,11 @@ export default function AllenamentoAttivoScreen() {
     }
   };
 
-  const handleSkip = () => {
+  const handleSkip = async () => {
     const idx = activeIdx;
     const ex = exercisesRef.current[idx];
     if (!ex) return;
-    const prog = progress[idx] ?? { currentSet: 1, weight: '', completed: false };
+    const prog = progress[idx] ?? { currentSet: 1, weights: [], completed: false };
     timedPhaseRef.current = 'idle';
     setTimedPhase('idle');
 
@@ -627,6 +653,7 @@ export default function AllenamentoAttivoScreen() {
           } else if (gi.lastIdx >= exercisesRef.current.length - 1) {
             finishedRef.current = true;
             const durationS = elapsed + 1;
+            await deleteDraft();
             navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
           } else {
             setActiveIdx(gi.lastIdx + 1);
@@ -644,6 +671,7 @@ export default function AllenamentoAttivoScreen() {
         if (idx >= exercisesRef.current.length - 1) {
           finishedRef.current = true;
           const durationS = elapsed + 1;
+          await deleteDraft();
           navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
         } else {
           setActiveIdx(idx + 1);
@@ -669,11 +697,11 @@ export default function AllenamentoAttivoScreen() {
   }
 
   const currentEx   = exercises[activeIdx];
-  const currentProg = progress[activeIdx] ?? { currentSet: 1, weight: '', completed: false };
+  const currentProg = progress[activeIdx] ?? { currentSet: 1, weights: [], completed: false };
   const gi          = getGroupInfo(exercises, activeIdx);
   const inGroup     = gi !== null;
   const curRound    = inGroup ? (groupRound[gi!.groupId] ?? 1) : 1;
-  const effectiveSets = inGroup && gi!.type !== 'simple' ? gi!.rounds : (currentEx?.sets ?? 1);
+  const effectiveSetCount = inGroup && gi!.type !== 'simple' ? gi!.rounds : (currentEx?.sets ?? 1);
   const isLastSet   = inGroup && gi!.type !== 'simple'
     ? (curRound >= gi!.rounds)
     : (currentProg.currentSet >= (currentEx?.sets ?? 1));
@@ -781,7 +809,7 @@ export default function AllenamentoAttivoScreen() {
     } else if (isLastSet) {
       if (inGroup && gi!.type === 'simple') {
         // Simple group: commit set, mark exercise done, advance within group or past it
-        commitSetImmediately(activeIdx, currentProg.currentSet, currentProg.weight);
+        commitSetImmediately(activeIdx, currentProg.currentSet, currentProg.weights[currentProg.currentSet - 1] ?? '');
         setProgress((prev) => {
           const next = [...prev];
           next[activeIdx] = { ...next[activeIdx], completed: true };
@@ -793,6 +821,7 @@ export default function AllenamentoAttivoScreen() {
           if (gi!.lastIdx >= exercisesRef.current.length - 1) {
             finishedRef.current = true;
             const durationS = elapsed + 1;
+            await deleteDraft();
             navigation.replace('Riepilogo', { sessionId: sessionIdRef.current!, durationS, bufferedSets: bufferedSetsRef.current });
           } else {
             setActiveIdx(gi!.lastIdx + 1);
@@ -801,7 +830,7 @@ export default function AllenamentoAttivoScreen() {
           setActiveIdx(activeIdx + 1);
         }
       } else {
-        handleProssimo();
+        await handleProssimo();
       }
     } else {
       await handleRecupero();
@@ -866,7 +895,7 @@ export default function AllenamentoAttivoScreen() {
           const seenGroups = new Set<number>();
 
           exercises.forEach((ex, idx) => {
-            const prog     = progress[idx] ?? { currentSet: 1, weight: '', completed: false };
+            const prog     = progress[idx] ?? { currentSet: 1, weights: [], completed: false };
             const isActive = idx === activeIdx;
             const isDone   = prog.completed;
             const isTimed  = ex.exercise_type === 'time';
@@ -916,7 +945,7 @@ export default function AllenamentoAttivoScreen() {
                   </View>
                   {/* Group exercises */}
                   {groupExs.map(({ e, i }) => {
-                    const gProg    = progress[i] ?? { currentSet: 1, weight: '', completed: false };
+                    const gProg    = progress[i] ?? { currentSet: 1, weights: [], completed: false };
                     const gActive  = i === activeIdx;
                     const gDone    = gProg.completed;
                     const gTimed   = e.exercise_type === 'time';
